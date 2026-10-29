@@ -1,0 +1,92 @@
+[project]
+name = "stealzalut"
+version = "0.1.0"
+description = "Extract a color signature from a reference image, apply it to a source, and export a reusable 3D LUT (.cube) for Lightroom / DaVinci Resolve."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "Mathieu" },
+]
+keywords = ["color-grading", "lut", "3d-lut", "color-transfer", "optimal-transport"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: End Users/Desktop",
+    "Topic :: Multimedia :: Graphics",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "PySide6>=6.6,<7",
+    "numpy>=1.24",
+    "opencv-python>=4.8",
+    "color-matcher>=0.5",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "ruff>=0.4",
+    "mypy>=1.10",
+]
+build = [
+    "pyinstaller>=6.0",
+]
+
+[project.scripts]
+stealzalut = "stealzalut.main:main"
+
+[project.gui-scripts]
+stealzalut-gui = "stealzalut.main:main"
+
+# ---------------------------------------------------------------------------
+# Build system — standard PEP 621 / PEP 517
+# ---------------------------------------------------------------------------
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/stealzalut"]
+
+# ---------------------------------------------------------------------------
+# Tool configuration
+# ---------------------------------------------------------------------------
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "SIM", "RUF"]
+ignore = [
+    "RUF001",
+    "RUF002",
+    "RUF003",
+    "N802",  # Function name should be lowercase (conflicts with PySide/Qt camelCase event overrides)
+]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = ["color_matcher.*", "cv2.*"]
+ignore_missing_imports = true
+
+[tool.pyrefly]
+search-path = ["src"]
+site-package-path = [".venv/lib/python3.10/site-packages"]
+python-interpreter-path = ".venv/bin/python"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers -v"
+

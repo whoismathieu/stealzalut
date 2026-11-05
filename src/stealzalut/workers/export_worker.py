@@ -68,6 +68,7 @@ class ExportWorker(QThread):
         lut_size: int,
         output_path: str | Path,
         title: str = "StealZaLut",
+        method: str = "mkl",
         parent: Any = None,
     ) -> None:
         super().__init__(parent)
@@ -76,27 +77,24 @@ class ExportWorker(QThread):
         self._lut_size = lut_size
         self._output_path = Path(output_path)
         self._title = title
-        self._engine = ColorTransferEngine()
+        self._method = method
+        self._engine = ColorTransferEngine(method=method)
 
     def run(self) -> None:
         """Execute the full LUT generation pipeline in the worker thread."""
         try:
             total_points = self._lut_size ** 3
             logger.info(
-                "ExportWorker started — LUT size %d (%d points), output: %s",
+                "ExportWorker started — LUT size %d (%d points), method: %s, output: %s",
                 self._lut_size,
                 total_points,
+                self._method,
                 self._output_path,
             )
 
-            # ── Phase 1: Compute MKL affine transform (0–20 %) ───────────
+            # ── Phase 1: Prepare color transfer parameters (0–20 %) ──────
             self.progress.emit(0)
-            logger.debug("Phase 1/4: Computing affine transform…")
-
-            transform = self._engine.compute_affine_transform(
-                self._source,
-                self._reference,
-            )
+            logger.debug("Phase 1/4: Analyzing color distributions for %s…", self._method)
             self.progress.emit(20)
 
             # ── Phase 2: Generate neutral grid (20–30 %) ─────────────────
@@ -106,7 +104,11 @@ class ExportWorker(QThread):
             self.progress.emit(30)
 
             # ── Phase 3: Bake the transform onto the grid (30–60 %) ──────
-            logger.debug("Phase 3/4: Baking transform onto %d grid points…", total_points)
+            logger.debug(
+                "Phase 3/4: Baking %s transform onto %d grid points…",
+                self._method,
+                total_points,
+            )
 
             # Process in chunks to allow progress reporting on large grids
             chunk_size = max(1, total_points // 30)  # ~30 progress updates
@@ -114,9 +116,11 @@ class ExportWorker(QThread):
 
             for start in range(0, total_points, chunk_size):
                 end = min(start + chunk_size, total_points)
-                baked_grid[start:end] = self._engine.apply_affine(
+                baked_grid[start:end] = self._engine.bake_grid(
                     grid[start:end],
-                    transform,
+                    self._source,
+                    self._reference,
+                    method=self._method,
                 )
                 # Map [0, total_points] → [30, 60]
                 phase_pct = int((end / total_points) * 30)

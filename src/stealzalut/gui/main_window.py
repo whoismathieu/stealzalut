@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 )
 
 from stealzalut.config import Settings
+from stealzalut.core.color_transfer import METHOD_LABELS
 from stealzalut.core.lut_engine import VALID_LUT_SIZES
 from stealzalut.gui.widgets.image_drop_zone import ImageDropZone
 from stealzalut.gui.widgets.preview_panel import PreviewPanel
@@ -114,9 +115,23 @@ class MainWindow(QMainWindow):
         splitter.setSizes([350, 350, 350])
         root_layout.addWidget(splitter, stretch=1)
 
-        # ── Middle: Controls (LUT size + Export button) ──────────────
+        # ── Middle: Controls (Algorithm + LUT size + Export button) ─
         controls_layout = QHBoxLayout()
         controls_layout.setSpacing(12)
+
+        # Algorithm selector
+        algo_label = QLabel("Algorithm:")
+        algo_label.setObjectName("controlLabel")
+        controls_layout.addWidget(algo_label)
+
+        self._algo_combo = QComboBox()
+        self._algo_combo.setObjectName("algoCombo")
+        for method_key, method_name in METHOD_LABELS.items():
+            self._algo_combo.addItem(method_name, userData=method_key)
+        default_algo_idx = self._algo_combo.findData(self._settings.color_transfer_method)
+        if default_algo_idx >= 0:
+            self._algo_combo.setCurrentIndex(default_algo_idx)
+        controls_layout.addWidget(self._algo_combo)
 
         # LUT size selector
         size_label = QLabel("LUT Size:")
@@ -178,7 +193,15 @@ class MainWindow(QMainWindow):
         self._export_btn.clicked.connect(self._on_export_clicked)
         self._clear_btn.clicked.connect(self._on_clear_all)
 
+        # Algorithm changed
+        self._algo_combo.currentIndexChanged.connect(self._on_algo_changed)
+
     # ── Slots ────────────────────────────────────────────────────────────
+
+    def _on_algo_changed(self, _index: int) -> None:
+        """Called when user changes the color transfer algorithm."""
+        if self._source_zone.has_image and self._reference_zone.has_image:
+            self._run_transfer_preview()
 
     def _on_image_changed(self, _image: Any) -> None:
         """Called when either source or reference image is loaded."""
@@ -236,14 +259,16 @@ class MainWindow(QMainWindow):
         if source is None or reference is None:
             return
 
+        method: str = str(self._algo_combo.currentData())
+
         # Cancel any running transfer
         if self._transfer_worker is not None and self._transfer_worker.isRunning():
             self._transfer_worker.wait(500)
 
-        self._status_bar.showMessage("Computing colour transfer preview…")
+        self._status_bar.showMessage(f"Computing colour transfer preview ({method})…")
         self._progress_bar.setValue(0)
 
-        self._transfer_worker = TransferWorker(source, reference)
+        self._transfer_worker = TransferWorker(source, reference, method=method)
         self._transfer_worker.progress.connect(self._on_transfer_progress)
         self._transfer_worker.result_ready.connect(self._on_transfer_result)
         self._transfer_worker.error.connect(self._on_worker_error)
@@ -268,11 +293,12 @@ class MainWindow(QMainWindow):
             return
 
         lut_size: int = self._size_combo.currentData()
+        method: str = str(self._algo_combo.currentData())
 
         # Disable export during processing
         self._export_btn.setEnabled(False)
         self._status_bar.showMessage(
-            f"Exporting {lut_size}³ LUT to {output_path.name}…"
+            f"Exporting {lut_size}³ LUT ({method}) to {output_path.name}…"
         )
         self._progress_bar.setValue(0)
 
@@ -281,6 +307,7 @@ class MainWindow(QMainWindow):
             reference_rgb=reference,
             lut_size=lut_size,
             output_path=output_path,
+            method=method,
         )
         self._export_worker.progress.connect(self._on_export_progress)
         self._export_worker.result_ready.connect(self._on_export_result)

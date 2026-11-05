@@ -1,4 +1,4 @@
-"""Image I/O utilities built on OpenCV and NumPy.
+"""Image I/O utilities built on OpenCV, Pillow, pillow-heif, rawpy, and NumPy.
 
 All public functions in this module work with NumPy arrays and never
 depend on Qt, keeping them usable in headless / test environments.
@@ -6,12 +6,15 @@ depend on Qt, keeping them usable in headless / test environments.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import cast
 
 import cv2
 import numpy as np
 from numpy.typing import NDArray
+
+logger = logging.getLogger(__name__)
 
 # ── Type aliases ─────────────────────────────────────────────────────────────
 ImageArray = NDArray[np.uint8]
@@ -21,9 +24,118 @@ FloatImage = NDArray[np.float64]
 """HWC image in float64 [0.0, 1.0]."""
 
 # ── Constants ────────────────────────────────────────────────────────────────
-SUPPORTED_EXTENSIONS: frozenset[str] = frozenset(
+HEIC_EXTENSIONS: frozenset[str] = frozenset({".heic", ".heif", ".hif"})
+RAW_EXTENSIONS: frozenset[str] = frozenset(
+    {
+        ".dng",  # Adobe / Leica / Apple ProRAW
+        ".cr2",  # Canon RAW 2
+        ".cr3",  # Canon RAW 3
+        ".crw",  # Canon original RAW
+        ".nef",  # Nikon Electronic Format
+        ".nrw",  # Nikon Coolpix RAW
+        ".arw",  # Sony Alpha RAW
+        ".srf",  # Sony RAW format
+        ".sr2",  # Sony RAW format 2
+        ".raf",  # Fujifilm RAW
+        ".rw2",  # Panasonic Lumix RAW
+        ".raw",  # Leica / Panasonic / Generic RAW
+        ".orf",  # Olympus / OM System RAW
+        ".pef",  # Pentax Electronic Format
+        ".ptx",  # Pentax RAW
+        ".rwl",  # Leica RAW
+        ".3fr",  # Hasselblad RAW
+        ".fff",  # Hasselblad RAW
+        ".iiq",  # Phase One RAW
+        ".mrw",  # Konica Minolta RAW
+        ".x3f",  # Sigma Foveon RAW
+    }
+)
+STANDARD_EXTENSIONS: frozenset[str] = frozenset(
     {".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp", ".webp"}
 )
+
+SUPPORTED_EXTENSIONS: frozenset[str] = frozenset(
+    STANDARD_EXTENSIONS | HEIC_EXTENSIONS | RAW_EXTENSIONS
+)
+
+
+# ── Format-specific decoders ────────────────────────────────────────────────
+
+
+def _load_heic_bgr(path: Path) -> ImageArray:
+    """Load a HEIC/HEIF image as BGR uint8 NumPy array with orientation correction."""
+    try:
+        import pillow_heif
+        from PIL import Image, ImageOps
+
+        pillow_heif.register_heif_opener()
+        with Image.open(path) as img:
+            transposed = ImageOps.exif_transpose(img)
+            rgb = np.array(transposed.convert("RGB"), dtype=np.uint8)
+            return cast("ImageArray", cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+    except Exception as exc:
+        raise ValueError(f"Failed to decode HEIC image {path}: {exc}") from exc
+
+
+def _load_raw_bgr(path: Path) -> ImageArray:
+    """Load a camera RAW/DNG image as BGR uint8 NumPy array."""
+    try:
+        import rawpy
+
+        with rawpy.imread(str(path)) as raw:
+            color_space_srgb = rawpy.ColorSpace.sRGB  # type: ignore[attr-defined]
+            try:
+                rgb = raw.postprocess(
+                    use_camera_wb=True,
+                    output_color=color_space_srgb,
+                    output_bps=8,
+                )
+            except Exception:
+                rgb = raw.postprocess(
+                    use_auto_wb=True,
+                    output_color=color_space_srgb,
+                    output_bps=8,
+                )
+            return cast("ImageArray", cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+    except Exception as raw_exc:
+        logger.debug("rawpy failed to decode %s (%s), falling back to Pillow", path, raw_exc)
+        try:
+            from PIL import Image, ImageOps
+
+            with Image.open(path) as img:
+                transposed = ImageOps.exif_transpose(img)
+                rgb = np.array(transposed.convert("RGB"), dtype=np.uint8)
+                return cast("ImageArray", cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+        except Exception as exc:
+            raise ValueError(f"Failed to decode RAW image {path}: {exc}") from exc
+
+
+def _load_standard_bgr(path: Path) -> ImageArray:
+    """Load standard image formats using OpenCV with unicode & Pillow fallbacks."""
+    # First attempt: standard cv2 imread
+    image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+    if image is not None:
+        return cast("ImageArray", image)
+
+    # Second attempt: cv2 imdecode from byte buffer (handles accented / non-ASCII Windows paths)
+    try:
+        buf = np.fromfile(str(path), dtype=np.uint8)
+        image = cv2.imdecode(buf, cv2.IMREAD_COLOR)
+        if image is not None:
+            return cast("ImageArray", image)
+    except Exception:
+        pass
+
+    # Third attempt: Pillow fallback
+    try:
+        from PIL import Image, ImageOps
+
+        with Image.open(path) as img:
+            transposed = ImageOps.exif_transpose(img)
+            rgb = np.array(transposed.convert("RGB"), dtype=np.uint8)
+            return cast("ImageArray", cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+    except Exception as exc:
+        raise ValueError(f"Failed to decode image: {path}") from exc
 
 
 # ── Loading ──────────────────────────────────────────────────────────────────
@@ -31,6 +143,11 @@ SUPPORTED_EXTENSIONS: frozenset[str] = frozenset(
 
 def load_image_bgr(path: str | Path) -> ImageArray:
     """Load an image from disk as a **BGR** uint8 NumPy array.
+
+    Supports:
+    - Standard raster formats (.jpg, .png, .tiff, .webp, .bmp, etc.)
+    - Apple / Mobile HEIC/HEIF (.heic, .heif, .hif)
+    - Camera RAW & DNG (.cr2, .cr3, .nef, .arw, .raf, .rw2, .orf, .pef, .dng, etc.)
 
     Args:
         path: Path to the image file.
@@ -45,15 +162,19 @@ def load_image_bgr(path: str | Path) -> ImageArray:
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"Image file not found: {path}")
-    if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
+
+    suffix = path.suffix.lower()
+    if suffix not in SUPPORTED_EXTENSIONS:
         raise ValueError(
             f"Unsupported image format '{path.suffix}'. "
             f"Supported: {', '.join(sorted(SUPPORTED_EXTENSIONS))}"
         )
-    image = cv2.imread(str(path), cv2.IMREAD_COLOR)
-    if image is None:
-        raise ValueError(f"Failed to decode image: {path}")
-    return cast("ImageArray", image)
+
+    if suffix in HEIC_EXTENSIONS:
+        return _load_heic_bgr(path)
+    if suffix in RAW_EXTENSIONS:
+        return _load_raw_bgr(path)
+    return _load_standard_bgr(path)
 
 
 # ── Colour-space helpers ─────────────────────────────────────────────────────

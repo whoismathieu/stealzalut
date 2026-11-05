@@ -80,6 +80,58 @@ class TestImageDropZone:
         assert success is False
         assert not zone.has_image
 
+    def test_load_heic_image(self, qapp: QApplication, tmp_path: Path) -> None:
+        import pillow_heif
+        from PIL import Image
+
+        pillow_heif.register_heif_opener()
+        heic_path = tmp_path / "photo.heic"
+        img = Image.new("RGB", (50, 60), color=(10, 20, 30))
+        img.save(heic_path, format="HEIF")
+
+        zone = ImageDropZone()
+        assert zone.load_from_path(heic_path) is True
+        assert zone.has_image is True
+        assert zone.image_rgb is not None
+        assert zone.image_rgb.shape == (60, 50, 3)
+
+    def test_load_dng_image(self, qapp: QApplication, tmp_path: Path) -> None:
+        from unittest.mock import MagicMock, patch
+
+        dng_path = tmp_path / "photo.dng"
+        dng_path.write_bytes(b"mock raw bytes")
+
+        mock_rgb = np.full((70, 90, 3), 150, dtype=np.uint8)
+        mock_raw = MagicMock()
+        mock_raw.postprocess.return_value = mock_rgb
+        mock_raw.__enter__.return_value = mock_raw
+        mock_raw.__exit__.return_value = None
+
+        zone = ImageDropZone()
+        with patch("rawpy.imread", return_value=mock_raw):
+            assert zone.load_from_path(dng_path) is True
+        assert zone.has_image is True
+        assert zone.image_rgb is not None
+        assert zone.image_rgb.shape == (70, 90, 3)
+
+    def test_load_camera_raw_cr2_image(self, qapp: QApplication, tmp_path: Path) -> None:
+        from unittest.mock import MagicMock, patch
+
+        cr2_path = tmp_path / "photo.cr2"
+        cr2_path.write_bytes(b"mock cr2 bytes")
+
+        mock_rgb = np.full((70, 90, 3), 150, dtype=np.uint8)
+        mock_raw = MagicMock()
+        mock_raw.postprocess.return_value = mock_rgb
+        mock_raw.__enter__.return_value = mock_raw
+        mock_raw.__exit__.return_value = None
+
+        zone = ImageDropZone()
+        with patch("rawpy.imread", return_value=mock_raw):
+            assert zone.load_from_path(cr2_path) is True
+        assert zone.has_image is True
+        assert zone.image_rgb is not None
+
     def test_clear_image(self, qapp: QApplication, sample_image_path: Path) -> None:
         zone = ImageDropZone()
         cleared_events: list[bool] = []
@@ -134,11 +186,19 @@ class TestMainWindow:
         # Export button disabled initially
         assert window._export_btn.isEnabled() is False
 
-        # Combo box populated and default selected
+        # Size combo box populated and default selected
         assert window._size_combo.count() == 3
         sizes = [window._size_combo.itemData(i) for i in range(window._size_combo.count())]
         assert sizes == [17, 33, 64]
         assert window._size_combo.currentData() == 33
+
+        # Algorithm combo box populated with all 7 methods and default selected
+        assert window._algo_combo.count() == 7
+        algos = [window._algo_combo.itemData(i) for i in range(window._algo_combo.count())]
+        assert "mkl" in algos
+        assert "reinhard" in algos
+        assert "hm" in algos
+        assert window._algo_combo.currentData() == "mkl"
 
     def test_export_button_enables_when_both_images_loaded(
         self,
@@ -179,5 +239,26 @@ class TestMainWindow:
             assert window._reference_zone.has_image is False
             assert window._export_btn.isEnabled() is False
             assert window._progress_bar.value() == 0
+        finally:
+            window.stop_workers()
+
+    def test_algo_change_triggers_preview_when_images_loaded(
+        self,
+        qapp: QApplication,
+        default_settings: Settings,
+        sample_image_path: Path,
+    ) -> None:
+        from unittest.mock import patch
+
+        window = MainWindow(settings=default_settings)
+        try:
+            window._source_zone.load_from_path(sample_image_path)
+            window._reference_zone.load_from_path(sample_image_path)
+
+            with patch.object(window, "_run_transfer_preview") as mock_preview:
+                reinhard_idx = window._algo_combo.findData("reinhard")
+                assert reinhard_idx >= 0
+                window._algo_combo.setCurrentIndex(reinhard_idx)
+                mock_preview.assert_called_once()
         finally:
             window.stop_workers()

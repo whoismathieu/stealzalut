@@ -44,20 +44,23 @@ class TransferWorker(QThread):
         self,
         source: NDArray[np.uint8],
         reference: NDArray[np.uint8],
+        method: str = "mkl",
         parent: Any = None,
     ) -> None:
         super().__init__(parent)
         self._source = source
         self._reference = reference
-        self._engine = ColorTransferEngine()
+        self._method = method
+        self._engine = ColorTransferEngine(method=method)
 
     def run(self) -> None:
         """Execute the colour transfer in the worker thread."""
         try:
             logger.info(
-                "TransferWorker started — source %s, reference %s",
+                "TransferWorker started — source %s, reference %s, method: %s",
                 self._source.shape,
                 self._reference.shape,
+                self._method,
             )
             self.progress.emit(10)
 
@@ -65,6 +68,7 @@ class TransferWorker(QThread):
             result = self._engine.transfer_image(
                 self._source,
                 self._reference,
+                method=self._method,
             )
             self.progress.emit(90)
 

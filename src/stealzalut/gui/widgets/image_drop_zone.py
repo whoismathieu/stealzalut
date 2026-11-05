@@ -26,9 +26,18 @@ from stealzalut.utils.image_io import (
 
 logger = logging.getLogger(__name__)
 
-_FILTER = "Images ({})".format(
-    " ".join(f"*{ext}" for ext in sorted(SUPPORTED_EXTENSIONS))
+_RAW_FILTER_EXTS = (
+    "*.cr2 *.cr3 *.nef *.arw *.raf *.rw2 *.orf *.pef *.dng *.raw "
+    "*.crw *.nrw *.srf *.sr2 *.rwl *.3fr *.fff *.iiq *.mrw *.x3f"
 )
+
+_FILTER = (
+    "All Supported Images ({all_ext});;"
+    f"Camera RAW & DNG ({_RAW_FILTER_EXTS});;"
+    "Standard Images (*.jpg *.jpeg *.png *.tiff *.tif *.bmp *.webp);;"
+    "Apple HEIC / HEIF (*.heic *.heif *.hif);;"
+    "All Files (*.*)"
+).format(all_ext=" ".join(f"*{ext}" for ext in sorted(SUPPORTED_EXTENSIONS)))
 
 
 class ImageDropZone(QWidget):

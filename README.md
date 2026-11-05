@@ -6,8 +6,26 @@
 
 ## 🚀 Fonctionnalités Clés
 
-* **Transfert Colorimétrique par Transport Optimal (MKL) :** Calcul analytique fermé de la matrice de transport de Monge–Kantorovitch entre les distributions gaussiennes de couleurs (Wasserstein-2).
-* **Moteur 3D LUT Dynamique :** Génération procédurale d'une grille 3D neutre en mémoire à résolution configurable (**17³, 33³, ou 64³** points) respectant strictement l'ordre d'itération standard `.cube` (R-rapide, G-moyen, B-lent).
+* **Multiples Algorithmes de Transfert Colorimétrique :**
+  * **MKL (Monge-Kantorovitch Linear) :** Transport optimal analytique fermé entre distributions gaussiennes (Wasserstein-2).
+  * **Reinhard :** Alignement statistique de moyenne et variance dans l'espace perceptuel $L\alpha\beta$ de Ruderman.
+  * **Histogram Matching (HM) :** Égalisation et alignement précis des distributions cumulées par canal (CDF matching).
+  * **MVGD :** Décalage multivarié gaussien.
+  * **Hybrides (HM-MKL-HM & HM-MVGD-HM) :** Pipeline en 3 étapes combinant alignement d'histogramme non-linéaire et transport optimal pour des contrastes et teintes riches.
+* **Moteur 3D LUT Dynamique & Cuisson Universelle :** Évaluation directe de l'algorithme sélectionné sur une grille 3D neutre en mémoire à résolution configurable (**17³, 33³, ou 64³** points) respectant strictement l'ordre d'itération standard `.cube` (R-rapide, G-moyen, B-lent).
+* **Formats d'Images Supportés :**
+  * **Standards :** JPEG, PNG, TIFF, BMP, WebP
+  * **Apple / Mobile :** HEIC / HEIF / HIF (avec correction automatique de l'orientation EXIF via `pillow-heif`)
+  * **RAW Boîtiers Professionnels & DNG :** Dématriçage haute fidélité via `rawpy` (LibRaw) avec respect de la balance des blancs du boîtier :
+    * **Canon :** `.cr2`, `.cr3`, `.crw`
+    * **Nikon :** `.nef`, `.nrw`
+    * **Sony :** `.arw`, `.srf`, `.sr2`
+    * **Fujifilm :** `.raf`
+    * **Panasonic Lumix :** `.rw2`, `.raw`
+    * **Olympus / OM System :** `.orf`
+    * **Pentax :** `.pef`, `.ptx`
+    * **Adobe / Leica / ProRAW :** `.dng`, `.rwl`
+    * **Hasselblad / Phase One / Sigma :** `.3fr`, `.fff`, `.iiq`, `.x3f`
 * **Interface Réactive PySide6 :** Glisser-déposer d'images (**drag-and-drop**), sélection interactive de la résolution LUT, aperçu en direct du rendu, et barre de progression continue.
 * **Architecture Asynchrone QThread :** Découplage strict entre l'UI et les calculs lourds (aucun gel de l'interface lors des opérations matricielles).
 * **Architecture Modulaire de Niveau Production :**
@@ -23,6 +41,7 @@
 * **Langage :** Python 3.10+ (Typage strict `mypy`)
 * **Interface Graphique :** `PySide6` (Qt 6)
 * **Calculs & Couleurs :** `numpy`, `opencv-python`, `color-matcher`
+* **Décodage d'Images Avancé :** `Pillow`, `pillow-heif` (HEIC), `rawpy` (DNG / RAW)
 * **Gestionnaire de Paquets :** `uv` (PEP 621 / `pyproject.toml`)
 * **Configuration :** `python-dotenv` (`.env`)
 * **Packaging :** Prêt pour `PyInstaller`
@@ -33,36 +52,79 @@
 
 ### 1. Installation des dépendances
 
-```bash
-# Avec uv sous WSL / Linux
-UV_LINK_MODE=copy uv sync --all-extras
+**Sous Windows (PowerShell / Terminal) :**
+```powershell
+# Synchronisation de l'environnement virtuel avec uv
+uv sync --all-extras
 
-# Ou configuration du fichier local
+# Configuration locale
+if (!(Test-Path .env)) { Copy-Item .env.example .env }
+```
+
+**Sous WSL / Linux :**
+```bash
+UV_LINK_MODE=copy uv sync --all-extras
 cp .env.example .env
 ```
 
 ### 2. Lancement de l'application
 
-```bash
-# Via uv
-UV_LINK_MODE=copy uv run stealzalut
+**Sous Windows :**
+```powershell
+# Méthode 1 : double-clic sur launch.bat (ou exécution de launch.bat / launch.ps1)
+.\launch.bat
 
-# Ou directement avec le module Python
-python -m stealzalut.main
+# Méthode 2 : via uv
+uv run stealzalut
+
+# Méthode 3 : directement avec l'environnement virtuel
+.\.venv\Scripts\stealzalut-gui.exe
+```
+
+**Sous WSL / Linux :**
+```bash
+UV_LINK_MODE=copy uv run stealzalut
+```
+
+---
+
+## 🛠️ Commandes Makefile (Développement)
+
+Un [`Makefile`](file:///c:/Users/mathi/Documents/StealZaLut/Makefile) est disponible à la racine (utilisable dans le terminal, sous WSL/Linux, ou via le plugin Makefile de PyCharm) :
+
+```bash
+make help        # Affiche la liste des commandes disponibles
+make format      # Formate le code (ruff format + check --fix)
+make lint        # Vérifie le respect du style PEP 8 (ruff check)
+make typecheck   # Vérification de typage strict (mypy)
+make test        # Lance les tests unitaires (pytest)
+make test-cov    # Lance les tests avec rapport de couverture
+make check       # Validation complète : lint + typecheck + test
+make clean       # Nettoie les caches (__pycache__, pytest, ruff, mypy...)
+make run         # Lance l'application
+make build       # Construit l'exécutable PyInstaller
 ```
 
 ---
 
 ## 🧪 Tests & Qualité de Code
 
-```bash
-# Tests unitaires et d'intégration (63 tests)
-UV_LINK_MODE=copy uv run pytest tests/ -v
+**Sous Windows (PowerShell) :**
+```powershell
+# Tests unitaires et d'intégration (105 tests)
+uv run pytest tests/ -v
 
 # Typage statique strict
-UV_LINK_MODE=copy uv run mypy src/
+uv run mypy src/
 
 # Linter et conformité PEP 8
+uv run ruff check .
+```
+
+**Sous WSL / Linux :**
+```bash
+UV_LINK_MODE=copy uv run pytest tests/ -v
+UV_LINK_MODE=copy uv run mypy src/
 UV_LINK_MODE=copy uv run ruff check .
 ```
 

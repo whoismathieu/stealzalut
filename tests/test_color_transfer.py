@@ -7,12 +7,15 @@ import pytest
 from numpy.testing import assert_array_almost_equal
 
 from stealzalut.core.color_transfer import (
+    METHOD_LABELS,
+    SUPPORTED_METHODS,
     AffineTransform,
     ColorTransferEngine,
     _compute_mkl_matrix,
     _matrix_sqrt,
     _matrix_sqrt_inv,
 )
+from stealzalut.core.lut_engine import generate_neutral_grid
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -173,4 +176,46 @@ class TestColorTransferEngine:
         src_as_row = transform.src_mean.reshape(1, 3)
         result = engine.apply_affine(src_as_row, transform)
         assert_array_almost_equal(result.ravel(), transform.ref_mean, decimal=10)
+
+    def test_invalid_method_raises(self) -> None:
+        """Initializing engine with unknown method raises ValueError."""
+        with pytest.raises(ValueError, match="Unsupported color transfer method"):
+            ColorTransferEngine(method="nonexistent_algorithm")
+
+    def test_supported_methods_constants(self) -> None:
+        """SUPPORTED_METHODS and METHOD_LABELS have matching keys."""
+        assert len(SUPPORTED_METHODS) == 7
+        for m in SUPPORTED_METHODS:
+            assert m in METHOD_LABELS
+
+    @pytest.mark.parametrize("method", SUPPORTED_METHODS)
+    def test_transfer_image_all_methods(
+        self,
+        method: str,
+        source_image: np.ndarray,
+        reference_image: np.ndarray,
+    ) -> None:
+        """Every supported method successfully transfers colors and keeps shape."""
+        engine = ColorTransferEngine(method=method)
+        result = engine.transfer_image(source_image, reference_image)
+        assert result.shape == source_image.shape
+        assert result.dtype == np.uint8
+        assert not np.array_equal(result, source_image)
+
+    @pytest.mark.parametrize("method", SUPPORTED_METHODS)
+    def test_bake_grid_all_methods(
+        self,
+        method: str,
+        source_image: np.ndarray,
+        reference_image: np.ndarray,
+    ) -> None:
+        """Every supported method produces a valid [0, 1] bounded 3D LUT grid."""
+        engine = ColorTransferEngine(method=method)
+        grid = generate_neutral_grid(17)
+        baked = engine.bake_grid(grid, source_image, reference_image)
+        assert baked.shape == grid.shape
+        assert baked.dtype == np.float64
+        assert baked.min() >= 0.0 and baked.max() <= 1.0
+        assert not np.isnan(baked).any()
+        assert not np.isinf(baked).any()
 

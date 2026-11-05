@@ -79,22 +79,53 @@ UV_LINK_MODE=copy uv run ruff check .
 
 ## 4. Lancement de l'application
 
+**Sous Windows :**
+```powershell
+cd c:\Users\mathi\Documents\StealZaLut
+
+# Via le script de lancement rapide (double-clic aussi possible)
+.\launch.bat
+
+# Ou via uv
+uv run stealzalut
+
+# Ou directement l'exécutable GUI du venv
+.\.venv\Scripts\stealzalut-gui.exe
+```
+
 **Sous WSL (avec WSLg / serveur X) :**
 ```bash
 cd /mnt/c/Users/mathi/Documents/StealZaLut
 UV_LINK_MODE=copy uv run stealzalut
 ```
 
-**Sous Windows (directement si Python 3.10+ est installé) :**
-```powershell
-cd c:\Users\mathi\Documents\StealZaLut
-python -m stealzalut.main
-```
+---
+
+## 5. Installation sous Windows (Détails)
+
+1. **`uv` sur Windows :**
+   - Installé via `Python 3.10` dans `C:\Users\mathi\AppData\Local\Programs\Python\Python310\Scripts\uv.exe`.
+   - Accessible directement en PowerShell / CMD car le dossier est dans le `PATH` utilisateur.
+
+2. **Environnement virtuel Windows :**
+   - Créé dans `.venv/` avec l'interpréteur Windows `Python 3.10`.
+   - Packages natifs Windows (wheels `.whl`) installés : `PySide6` (Qt 6), `numpy`, `opencv-python`, `color-matcher`, etc.
+
+3. **Scripts de lancement :**
+   - `launch.bat` et `launch.ps1` à la racine pour un démarrage immédiat.
 
 ---
 
 ## Nettoyage complet (tout annuler)
 
+**Sous Windows :**
+```powershell
+# Supprimer l'environnement virtuel et scripts
+Remove-Item -Recurse -Force .venv
+Remove-Item launch.bat, launch.ps1
+```
+
+**Sous Linux / WSL :**
 ```bash
 # 1. Supprimer uv
 rm -f ~/.local/bin/uv ~/.local/bin/uvx ~/.local/bin/env

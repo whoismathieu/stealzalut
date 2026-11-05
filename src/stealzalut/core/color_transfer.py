@@ -45,25 +45,65 @@ class AffineTransform:
     ref_mean: NDArray[np.float64]
 
 
+# ── Method definitions ───────────────────────────────────────────────────────
+
+SUPPORTED_METHODS: tuple[str, ...] = (
+    "mkl",
+    "reinhard",
+    "hm",
+    "mvgd",
+    "hm-mkl-hm",
+    "hm-mvgd-hm",
+    "default",
+)
+
+METHOD_LABELS: dict[str, str] = {
+    "mkl": "Monge–Kantorovitch (MKL)",
+    "reinhard": "Reinhard (Lab Stats)",
+    "hm": "Histogram Matching (HM)",
+    "mvgd": "Gaussian (MVGD)",
+    "hm-mkl-hm": "Hybrid (HM + MKL + HM)",
+    "hm-mvgd-hm": "Hybrid (HM + MVGD + HM)",
+    "default": "Default (ColorMatcher)",
+}
+
+
 # ── Engine ───────────────────────────────────────────────────────────────────
 
 
 class ColorTransferEngine:
-    """Encapsulates the MKL colour transfer pipeline.
+    """Encapsulates colour transfer pipelines and 3D LUT baking.
+
+    Supports all transfer algorithms offered by ``color-matcher``:
+    - ``mkl`` (Monge–Kantorovitch Linear optimal transport)
+    - ``reinhard`` (Reinhard statistical alignment in Ruderman Lab space)
+    - ``hm`` (Channel-wise histogram matching)
+    - ``mvgd`` (Multivariate Gaussian distribution transfer)
+    - ``hm-mkl-hm`` (Hybrid histogram matching + MKL + histogram matching)
+    - ``hm-mvgd-hm`` (Hybrid histogram matching + MVGD + histogram matching)
+    - ``default`` (ColorMatcher default)
 
     Usage::
 
-        engine = ColorTransferEngine()
+        engine = ColorTransferEngine(method="mkl")
 
         # Preview — returns a transferred image
         preview = engine.transfer_image(source_rgb, reference_rgb)
 
-        # LUT baking — extract the affine, then apply to a grid
-        transform = engine.compute_affine_transform(source_rgb, reference_rgb)
-        baked_grid = engine.apply_affine(neutral_grid, transform)
+        # LUT baking — bake chosen algorithm onto neutral 3D grid
+        baked_grid = engine.bake_grid(neutral_grid, source_rgb, reference_rgb)
     """
 
     METHOD: str = "mkl"
+
+    def __init__(self, method: str = "mkl") -> None:
+        chosen = method.lower()
+        if chosen not in SUPPORTED_METHODS:
+            raise ValueError(
+                f"Unsupported color transfer method '{method}'. "
+                f"Supported: {', '.join(SUPPORTED_METHODS)}"
+            )
+        self.method: str = chosen
 
     # ── Image-level transfer (via color-matcher) ─────────────────────────
 
@@ -71,8 +111,9 @@ class ColorTransferEngine:
         self,
         source: NDArray[np.uint8],
         reference: NDArray[np.uint8],
+        method: str | None = None,
     ) -> NDArray[np.uint8]:
-        """Apply MKL colour transfer so *source* matches *reference*.
+        """Apply colour transfer so *source* matches *reference*.
 
         Delegates to ``color-matcher`` for a battle-tested implementation
         that handles edge-cases (singular covariances, etc.).
@@ -80,13 +121,48 @@ class ColorTransferEngine:
         Args:
             source: Source image, **RGB** uint8, shape ``(H, W, 3)``.
             reference: Reference image, **RGB** uint8, shape ``(H, W, 3)``.
+            method: Color transfer method name. If None, uses engine's method.
 
         Returns:
             Transferred image, **RGB** uint8, shape ``(H, W, 3)``.
         """
+        chosen_method = (method or self.method).lower()
+        if chosen_method not in SUPPORTED_METHODS:
+            raise ValueError(
+                f"Unsupported color transfer method '{chosen_method}'. "
+                f"Supported: {', '.join(SUPPORTED_METHODS)}"
+            )
         cm = ColorMatcher()
-        result = cm.transfer(src=source, ref=reference, method=self.METHOD)
+        result = cm.transfer(src=source, ref=reference, method=chosen_method)
         return cast("NDArray[np.uint8]", np.clip(result, 0, 255).astype(np.uint8))
+
+    # ── 3D LUT Grid Baking ───────────────────────────────────────────────
+
+    def bake_grid(
+        self,
+        grid: NDArray[np.float64],
+        source: NDArray[np.uint8],
+        reference: NDArray[np.uint8],
+        method: str | None = None,
+    ) -> NDArray[np.float64]:
+        """Bake the chosen color transfer algorithm onto a neutral 3D LUT grid.
+
+        Args:
+            grid: Neutral grid of shape ``(N, 3)`` in [0.0, 1.0].
+            source: Source image, **RGB** uint8, shape ``(H, W, 3)``.
+            reference: Reference image, **RGB** uint8, shape ``(H, W, 3)``.
+            method: Color transfer method name. If None, uses engine's method.
+
+        Returns:
+            Baked grid of shape ``(N, 3)`` in [0.0, 1.0], clamped.
+        """
+        chosen_method = (method or self.method).lower()
+        if chosen_method not in SUPPORTED_METHODS:
+            raise ValueError(
+                f"Unsupported color transfer method '{chosen_method}'. "
+                f"Supported: {', '.join(SUPPORTED_METHODS)}"
+            )
+        return _bake_grid_impl(grid, source, reference, chosen_method)
 
     # ── Affine transform extraction (pure numpy) ─────────────────────────
 
@@ -209,4 +285,86 @@ def _compute_mkl_matrix(
     sqrt_inner = _matrix_sqrt(inner)
 
     return sqrt_s_inv @ sqrt_inner @ sqrt_s_inv
+
+
+def _bake_grid_impl(
+    grid: NDArray[np.float64],
+    source: NDArray[np.uint8],
+    reference: NDArray[np.uint8],
+    method: str,
+) -> NDArray[np.float64]:
+    """Execute grid baking for the specified transfer algorithm."""
+    if method in ("mkl", "mvgd", "default"):
+        src_pixels = source.reshape(-1, 3).astype(np.float64) / 255.0
+        ref_pixels = reference.reshape(-1, 3).astype(np.float64) / 255.0
+        mu_s = src_pixels.mean(axis=0)
+        mu_r = ref_pixels.mean(axis=0)
+        cov_s = np.asarray(np.cov(src_pixels, rowvar=False), dtype=np.float64)
+        cov_r = np.asarray(np.cov(ref_pixels, rowvar=False), dtype=np.float64)
+        transport_matrix = _compute_mkl_matrix(cov_s, cov_r)
+        centered = grid - mu_s
+        result = centered @ transport_matrix.T + mu_r
+        return cast("NDArray[np.float64]", np.clip(result, 0.0, 1.0))
+
+    if method == "reinhard":
+        from color_matcher.reinhard_matcher import LMS_MAT, LMS_MAT_INV
+
+        s_flat = np.maximum(source.reshape((-1, 3)).T.astype(np.float64) / 255.0, 1.0 / 255.0)
+        r_flat = np.maximum(reference.reshape((-1, 3)).T.astype(np.float64) / 255.0, 1.0 / 255.0)
+
+        b = np.array(
+            [
+                [1.0 / np.sqrt(3), 0.0, 0.0],
+                [0.0, 1.0 / np.sqrt(6), 0.0],
+                [0.0, 0.0, 1.0 / np.sqrt(2)],
+            ]
+        )
+        c = np.array([[1.0, 1.0, 1.0], [1.0, 1.0, -2.0], [1.0, -1.0, 0.0]])
+        bc = b @ c
+        cb = c.T @ b
+
+        lab_s = bc @ np.log10(LMS_MAT @ s_flat)
+        lab_r = bc @ np.log10(LMS_MAT @ r_flat)
+
+        mean_s, std_s = np.mean(lab_s, axis=1), np.std(lab_s, axis=1)
+        mean_r, std_r = np.mean(lab_r, axis=1), np.std(lab_r, axis=1)
+        std_ratios = std_r / np.maximum(std_s, 1e-12)
+
+        p_flat = np.maximum(grid.T, 1.0 / 255.0)
+        lab_p = bc @ np.log10(LMS_MAT @ p_flat)
+        lab_trans = ((lab_p.T - mean_s) * std_ratios + mean_r).T
+        lms_res = 10.0 ** (cb @ lab_trans)
+        rgb_res = (LMS_MAT_INV @ lms_res).T
+        return cast("NDArray[np.float64]", np.clip(rgb_res, 0.0, 1.0))
+
+    if method == "hm":
+        baked = np.zeros_like(grid)
+        for ch in range(3):
+            s_vec = source[..., ch].ravel()
+            r_vec = reference[..., ch].ravel()
+            _, s_cnts = np.unique(s_vec, return_counts=True)
+            r_vals, r_cnts = np.unique(r_vec, return_counts=True)
+            s_cdf = np.cumsum(s_cnts).astype(np.float64) / s_vec.size
+            r_cdf = np.cumsum(r_cnts).astype(np.float64) / r_vec.size
+            interp_vals = np.interp(s_cdf, r_cdf, r_vals) / 255.0
+            s_vals = np.unique(s_vec).astype(np.float64) / 255.0
+            baked[:, ch] = np.interp(grid[:, ch], s_vals, interp_vals)
+        return cast("NDArray[np.float64]", np.clip(baked, 0.0, 1.0))
+
+    if method in ("hm-mkl-hm", "hm-mvgd-hm"):
+        g1 = _bake_grid_impl(grid, source, reference, "hm")
+        s1_flat = _bake_grid_impl(
+            source.reshape(-1, 3).astype(np.float64) / 255.0, source, reference, "hm"
+        )
+        s1 = np.clip(s1_flat * 255.0, 0, 255).astype(np.uint8).reshape(source.shape)
+
+        g2 = _bake_grid_impl(g1, s1, reference, "mkl")
+        s2_flat = _bake_grid_impl(
+            s1.reshape(-1, 3).astype(np.float64) / 255.0, s1, reference, "mkl"
+        )
+        s2 = np.clip(s2_flat * 255.0, 0, 255).astype(np.uint8).reshape(source.shape)
+
+        return _bake_grid_impl(g2, s2, reference, "hm")
+
+    raise ValueError(f"Unknown color transfer method: {method}")
 

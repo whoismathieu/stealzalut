@@ -183,8 +183,9 @@ class TestMainWindow:
     def test_initial_controls_state(self, qapp: QApplication, default_settings: Settings) -> None:
         window = MainWindow(settings=default_settings)
 
-        # Export button disabled initially
+        # Export buttons disabled initially
         assert window._export_btn.isEnabled() is False
+        assert window._export_xmp_btn.isEnabled() is False
 
         # Size combo box populated and default selected
         assert window._size_combo.count() == 3
@@ -209,14 +210,17 @@ class TestMainWindow:
         window = MainWindow(settings=default_settings)
         try:
             assert window._export_btn.isEnabled() is False
+            assert window._export_xmp_btn.isEnabled() is False
 
             # Load only source
             window._source_zone.load_from_path(sample_image_path)
             assert window._export_btn.isEnabled() is False
+            assert window._export_xmp_btn.isEnabled() is False
 
             # Load reference
             window._reference_zone.load_from_path(sample_image_path)
             assert window._export_btn.isEnabled() is True
+            assert window._export_xmp_btn.isEnabled() is True
         finally:
             window.stop_workers()
 
@@ -231,6 +235,7 @@ class TestMainWindow:
             window._source_zone.load_from_path(sample_image_path)
             window._reference_zone.load_from_path(sample_image_path)
             assert window._export_btn.isEnabled() is True
+            assert window._export_xmp_btn.isEnabled() is True
 
             # Click Clear All
             window._clear_btn.click()
@@ -238,6 +243,7 @@ class TestMainWindow:
             assert window._source_zone.has_image is False
             assert window._reference_zone.has_image is False
             assert window._export_btn.isEnabled() is False
+            assert window._export_xmp_btn.isEnabled() is False
             assert window._progress_bar.value() == 0
         finally:
             window.stop_workers()

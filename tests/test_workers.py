@@ -278,3 +278,41 @@ class TestExportWorker:
         assert len(results) == 1
         content = Path(results[0]).read_text(encoding="utf-8")
         assert 'TITLE "MyCustomGrade"' in content
+
+    def test_creates_xmp_file(
+        self,
+        qapp: QApplication,
+        source_image: np.ndarray,
+        reference_image: np.ndarray,
+        tmp_path: Path,
+    ) -> None:
+        """The worker must write a valid Lightroom profile (.xmp) when requested."""
+        output = tmp_path / "test_profile.xmp"
+        results: list[str] = []
+        errors: list[str] = []
+
+        worker = ExportWorker(
+            source_rgb=source_image,
+            reference_rgb=reference_image,
+            lut_size=17,
+            output_path=output,
+            title="MyProfile",
+            group="StealZaLut",
+        )
+        worker.result_ready.connect(results.append)
+        worker.error.connect(errors.append)
+
+        _run_worker_with_event_loop(worker)
+
+        assert len(errors) == 0, f"Worker emitted error: {errors}"
+        assert len(results) == 1
+
+        result_path = Path(results[0])
+        assert result_path.exists()
+        assert result_path.suffix == ".xmp"
+
+        content = result_path.read_text(encoding="utf-8")
+        assert 'crs:PresetType="Look"' in content
+        assert "MyProfile" in content
+        assert "StealZaLut" in content
+        assert 'crs:RGBTable="' in content

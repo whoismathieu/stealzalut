@@ -39,11 +39,12 @@ StealZaLut/
 │       │   ├── __init__.py
 │       │   ├── color_transfer.py   # Wrapper autour de color-matcher
 │       │   ├── lut_engine.py       # Génération de la grille 3D neutre (numpy)
-│       │   └── lut_export.py       # Sérialisation au format .cube
+│       │   ├── lut_export.py       # Sérialisation au format .cube
+│       │   └── xmp_export.py       # Sérialisation profil Lightroom Classic (.xmp)
 │       │
 │       ├── gui/                # ★ COUCHE PRÉSENTATION (PySide6)
 │       │   ├── __init__.py
-│       │   ├── main_window.py      # Fenêtre principale
+│       │   ├── main_window.py      # Fenêtre principale (boutons .cube & .xmp)
 │       │   ├── widgets/
 │       │   │   ├── __init__.py
 │       │   │   ├── image_drop_zone.py  # Widget drag-and-drop
@@ -54,7 +55,7 @@ StealZaLut/
 │       ├── workers/            # ★ COUCHE ASYNCHRONE (QThread + Signals)
 │       │   ├── __init__.py
 │       │   ├── transfer_worker.py  # Thread : calcul du transfert couleur
-│       │   └── export_worker.py    # Thread : baking + export .cube
+│       │   └── export_worker.py    # Thread : baking + export (.cube / .xmp)
 │       │
 │       └── utils/              # Utilitaires transverses
 │           ├── __init__.py
@@ -64,8 +65,13 @@ StealZaLut/
 ├── tests/                      # Tests unitaires (pytest)
 │   ├── __init__.py
 │   ├── test_color_transfer.py
+│   ├── test_gui.py
+│   ├── test_image_io.py
 │   ├── test_lut_engine.py
-│   └── test_lut_export.py
+│   ├── test_lut_export.py
+│   ├── test_main.py
+│   ├── test_workers.py
+│   └── test_xmp_export.py
 │
 └── assets/                     # Ressources statiques (icônes, images)
     └── icons/
@@ -167,6 +173,25 @@ La grille neutre de taille `N` est un tableau `numpy` de forme `(N³, 3)` dont c
 | 64 | 262 144 | ~8 Mo |
 
 L'utilisateur choisit la taille via un menu déroulant dans la GUI. Le worker transmet cette valeur au `LutEngine` qui génère la grille correspondante.
+
+### 3.5 Export natif de profils Lightroom Classic (.xmp)
+
+En plus de l'export `.cube`, StealZaLut permet l'export direct vers le format de **Profil Lightroom Classic** (`.xmp`, `PresetType="Look"`). Ce format a été rétro-ingénieré depuis Adobe Camera Raw (`CameraRaw.dll`) :
+
+1. **Interpolation trilinéaire 32³** : Camera Raw exige une table 32×32×32 points. Si la grille d'entrée a une autre résolution (17³, 33³, 64³), elle est rééchantillonnée fidèlement en pur NumPy.
+2. **Encodage différentiel 16 bits BGR** :
+   $$\Delta = \operatorname{clip}\left(\operatorname{round}((\text{cible} - \text{identité}) \times 65535), -32768, 32767\right)$$
+   Ordonnancement des canaux en mémoire : BGR (`int16` little-endian).
+   Ordonnancement des points : Blue le plus lent, Green intermédiaire, Red le plus rapide.
+3. **Structure binaire exacte (196 652 octets décompressés)** :
+   - En-tête de 16 octets : `uint32(1, 1, 3, 32)`.
+   - Table de 196 608 octets ($32^3 \times 3 \times 2$).
+   - Pied de page de 28 octets : `uint32(0, 1, 0, 0, 0)` et `double(2.0)`.
+4. **Compression et encapsulation** :
+   - Compression zlib niveau 9 précédée de 4 octets little-endian de la taille décompressée (`196652 = 0x3002c`, s'encodant en `"Lir00"`).
+   - Encodage Base85 little-endian propriétaire d'Adobe utilisant son alphabet spécifique de 85 caractères.
+   - Calcul de l'empreinte MD5 (majuscule hexadécimale) sur les 196 652 octets décompressés pour `crs:RGBTable` et `crs:Table_<MD5>`.
+   - Enveloppe XML standard Camera Raw avec support du curseur de dosage (`crs:SupportsAmount="True"`).
 
 ---
 

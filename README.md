@@ -1,10 +1,15 @@
 # StealZaLut
 
-> Application de bureau professionnelle permettant d'extraire la signature colorimétrique d'une image de référence, de l'appliquer à une image source, et d'exporter le transfert sous forme de profil 3D LUT (`.cube`) pour Lightroom, DaVinci Resolve, Photoshop, etc.
+> Application de bureau professionnelle permettant d'extraire la signature colorimétrique d'une image de référence, de l'appliquer à une image source, et d'exporter le transfert sous forme de profil 3D LUT (`.cube`) ou de profil natif Lightroom Classic (`.xmp`).
 
 ---
 
 ## 🚀 Fonctionnalités Clés
+
+* **Choix du Format d'Export : 3D LUT (.cube) ou Profil Lightroom Classic (.xmp) :**
+  * **LUT `.cube` standard :** Exportez uniquement le fichier 3D LUT universel pour DaVinci Resolve, Photoshop, Premiere Pro, Final Cut Pro, OBS.
+  * **Profil natif Lightroom Classic `.xmp` :** Exportez uniquement le profil natif sans passer par Photoshop/Bridge ni manipulation manuelle de Camera Raw. Intègre la table 3D compressée en Base85 propriétaire avec gestion native du curseur de dosage (Amount 0–200 %). Prêt à l'emploi dans `%APPDATA%\Adobe\CameraRaw\Settings`.
+  * **Conversion directe `.cube` vers `.xmp` :** Fonction programmatique `cube_to_xmp()` pour convertir n'importe quel fichier cube existant en profil Lightroom.
 
 * **Multiples Algorithmes de Transfert Colorimétrique :**
   * **MKL (Monge-Kantorovitch Linear) :** Transport optimal analytique fermé entre distributions gaussiennes (Wasserstein-2).

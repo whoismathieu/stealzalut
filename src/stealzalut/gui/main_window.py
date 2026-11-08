@@ -156,11 +156,18 @@ class MainWindow(QMainWindow):
         self._clear_btn.setObjectName("clearButton")
         controls_layout.addWidget(self._clear_btn)
 
-        # Export button
+        # Export buttons (.cube and .xmp)
         self._export_btn = QPushButton("Export .cube")
         self._export_btn.setObjectName("exportButton")
         self._export_btn.setEnabled(False)
+        self._export_btn.setToolTip("Exporter uniquement le fichier 3D LUT (.cube)")
         controls_layout.addWidget(self._export_btn)
+
+        self._export_xmp_btn = QPushButton("Export Profile (.xmp)")
+        self._export_xmp_btn.setObjectName("exportXmpButton")
+        self._export_xmp_btn.setEnabled(False)
+        self._export_xmp_btn.setToolTip("Exporter uniquement le profil Lightroom Classic (.xmp)")
+        controls_layout.addWidget(self._export_xmp_btn)
 
         root_layout.addLayout(controls_layout)
 
@@ -191,6 +198,7 @@ class MainWindow(QMainWindow):
 
         # Buttons
         self._export_btn.clicked.connect(self._on_export_clicked)
+        self._export_xmp_btn.clicked.connect(self._on_export_xmp_clicked)
         self._clear_btn.clicked.connect(self._on_clear_all)
 
         # Algorithm changed
@@ -225,7 +233,7 @@ class MainWindow(QMainWindow):
         self._status_bar.showMessage("Cleared — ready for new images.")
 
     def _on_export_clicked(self) -> None:
-        """Open a save dialog and start the export worker."""
+        """Open a save dialog and start the .cube export worker."""
         if not self._source_zone.has_image or not self._reference_zone.has_image:
             return
 
@@ -241,9 +249,34 @@ class MainWindow(QMainWindow):
 
         path, _ = QFileDialog.getSaveFileName(
             self,
-            "Export 3D LUT",
+            "Export 3D LUT (.cube)",
             default_path,
             "Cube LUT (*.cube)",
+        )
+        if not path:
+            return
+
+        self._run_export(Path(path))
+
+    def _on_export_xmp_clicked(self) -> None:
+        """Open a save dialog and start the Lightroom profile (.xmp) export."""
+        if not self._source_zone.has_image or not self._reference_zone.has_image:
+            return
+
+        default_name = "stealzalut_profile.xmp"
+        if self._source_zone.image_path and self._reference_zone.image_path:
+            src_stem = self._source_zone.image_path.stem
+            ref_stem = self._reference_zone.image_path.stem
+            default_name = f"{src_stem}_x_{ref_stem}.xmp"
+
+        default_dir = str(self._settings.lut_output_dir)
+        default_path = str(Path(default_dir) / default_name)
+
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Lightroom Profile (.xmp)",
+            default_path,
+            "Lightroom Profile (*.xmp)",
         )
         if not path:
             return
@@ -286,7 +319,7 @@ class MainWindow(QMainWindow):
     # ── Export ────────────────────────────────────────────────────────────
 
     def _run_export(self, output_path: Path) -> None:
-        """Launch the ExportWorker to generate the .cube file."""
+        """Launch the ExportWorker to generate the .cube or .xmp file."""
         source = self._source_zone.image_rgb
         reference = self._reference_zone.image_rgb
         if source is None or reference is None:
@@ -295,18 +328,23 @@ class MainWindow(QMainWindow):
         lut_size: int = self._size_combo.currentData()
         method: str = str(self._algo_combo.currentData())
 
-        # Disable export during processing
+        # Disable exports during processing
         self._export_btn.setEnabled(False)
+        self._export_xmp_btn.setEnabled(False)
+        is_xmp = output_path.suffix.lower() == ".xmp"
+        export_type = "Lightroom Profile (.xmp)" if is_xmp else ".cube LUT"
         self._status_bar.showMessage(
-            f"Exporting {lut_size}³ LUT ({method}) to {output_path.name}…"
+            f"Exporting {export_type} ({method}) to {output_path.name}…"
         )
         self._progress_bar.setValue(0)
 
+        title = output_path.stem
         self._export_worker = ExportWorker(
             source_rgb=source,
             reference_rgb=reference,
             lut_size=lut_size,
             output_path=output_path,
+            title=title,
             method=method,
         )
         self._export_worker.progress.connect(self._on_export_progress)
@@ -322,18 +360,31 @@ class MainWindow(QMainWindow):
         self._progress_bar.setValue(100)
         path = Path(path_str)
         self._status_bar.showMessage(f"Exported: {path.name}")
-        logger.info("LUT exported to %s", path)
+        logger.info("Exported to %s", path)
+
+        if path.suffix.lower() == ".xmp":
+            msg = (
+                f"Lightroom Profile saved to:\n{path}\n\n"
+                f"You can import this profile directly into Lightroom Classic "
+                f"and Adobe Camera Raw.\n\n"
+                f"Tip: To make it appear automatically in your Profile Browser, place it in:\n"
+                f"%APPDATA%\\Adobe\\CameraRaw\\Settings"
+            )
+        else:
+            msg = (
+                f"3D LUT saved to:\n{path}\n\n"
+                f"You can import this .cube file in Lightroom, "
+                f"DaVinci Resolve, or any compatible application."
+            )
 
         QMessageBox.information(
             self,
             "Export Complete",
-            f"3D LUT saved to:\n{path}\n\n"
-            f"You can import this .cube file in Lightroom, "
-            f"DaVinci Resolve, or any compatible application.",
+            msg,
         )
 
     def _on_export_finished(self) -> None:
-        """Re-enable the export button when the worker finishes."""
+        """Re-enable the export buttons when the worker finishes."""
         self._update_export_button_state()
 
     # ── Error handling ───────────────────────────────────────────────────
@@ -350,12 +401,14 @@ class MainWindow(QMainWindow):
     # ── Helpers ──────────────────────────────────────────────────────────
 
     def _update_export_button_state(self) -> None:
-        """Enable the export button only when both images are loaded."""
+        """Enable the export buttons only when both images are loaded."""
         both_loaded = self._source_zone.has_image and self._reference_zone.has_image
         not_exporting = (
             self._export_worker is None or not self._export_worker.isRunning()
         )
-        self._export_btn.setEnabled(both_loaded and not_exporting)
+        is_enabled = both_loaded and not_exporting
+        self._export_btn.setEnabled(is_enabled)
+        self._export_xmp_btn.setEnabled(is_enabled)
 
     def stop_workers(self, timeout_ms: int = 3000) -> None:
         """Wait for any running background workers to finish."""

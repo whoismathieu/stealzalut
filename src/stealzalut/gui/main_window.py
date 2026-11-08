@@ -8,6 +8,7 @@ directly — all matrix operations run in QThread workers.
 from __future__ import annotations
 
 import logging
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -61,6 +62,8 @@ class MainWindow(QMainWindow):
         self._settings = settings
         self._transfer_worker: TransferWorker | None = None
         self._export_worker: ExportWorker | None = None
+        # Superseded preview workers still running; kept alive until they end.
+        self._stale_transfer_workers: list[TransferWorker] = []
 
         self.setWindowTitle("StealZaLut — Colour LUT Generator")
         self.setMinimumSize(900, 550)
@@ -264,9 +267,8 @@ class MainWindow(QMainWindow):
         method: str = str(self._algo_combo.currentData())
         lut_size: int = self._size_combo.currentData()
 
-        # Cancel any running transfer
-        if self._transfer_worker is not None and self._transfer_worker.isRunning():
-            self._transfer_worker.wait(500)
+        # A newer request supersedes any preview still being computed
+        self._retire_transfer_worker()
 
         self._status_bar.showMessage(f"Computing colour transfer preview ({method})…")
         self._progress_bar.setValue(0)
@@ -278,6 +280,34 @@ class MainWindow(QMainWindow):
         self._transfer_worker.result_ready.connect(self._on_transfer_result)
         self._transfer_worker.error.connect(self._on_worker_error)
         self._transfer_worker.start()
+
+    def _retire_transfer_worker(self) -> None:
+        """Detach the current preview worker without blocking the GUI.
+
+        Its signals are disconnected so a stale result can never overwrite
+        a newer preview.  If it is still running, it stays referenced until
+        it finishes: a ``QThread`` garbage-collected while running aborts
+        the whole application ("QThread: Destroyed while thread is still
+        running").
+        """
+        old = self._transfer_worker
+        self._transfer_worker = None
+        if old is None:
+            return
+
+        old.progress.disconnect(self._on_transfer_progress)
+        old.result_ready.disconnect(self._on_transfer_result)
+        old.error.disconnect(self._on_worker_error)
+
+        if old.isRunning():
+            self._stale_transfer_workers.append(old)
+            old.finished.connect(partial(self._forget_stale_worker, old))
+
+    def _forget_stale_worker(self, worker: TransferWorker) -> None:
+        """Release a superseded preview worker once its thread has ended."""
+        worker.wait()  # ``finished`` fires just before the thread fully exits
+        if worker in self._stale_transfer_workers:
+            self._stale_transfer_workers.remove(worker)
 
     def _on_transfer_progress(self, pct: int) -> None:
         self._progress_bar.setValue(pct)
@@ -371,7 +401,8 @@ class MainWindow(QMainWindow):
 
     def stop_workers(self, timeout_ms: int = 3000) -> None:
         """Wait for any running background workers to finish."""
-        for worker in (self._transfer_worker, self._export_worker):
+        workers = [self._transfer_worker, self._export_worker, *self._stale_transfer_workers]
+        for worker in workers:
             if worker is not None and worker.isRunning():
                 worker.wait(timeout_ms)
 

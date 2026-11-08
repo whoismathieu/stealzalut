@@ -262,3 +262,58 @@ class TestMainWindow:
                 mock_preview.assert_called_once()
         finally:
             window.stop_workers()
+
+    def test_superseded_preview_does_not_crash(
+        self,
+        qapp: QApplication,
+        default_settings: Settings,
+        sample_image_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Re-dropping an image while a preview runs must not destroy the thread.
+
+        Regression: the running QThread lost its last reference and Qt aborted
+        with "QThread: Destroyed while thread is still running".
+        """
+        import gc
+        import time
+        from unittest.mock import patch
+
+        import stealzalut.gui.main_window as main_window_module
+        from stealzalut.workers.transfer_worker import TransferWorker
+
+        class SlowTransferWorker(TransferWorker):
+            def run(self) -> None:
+                time.sleep(0.4)
+                super().run()
+
+        monkeypatch.setattr(main_window_module, "TransferWorker", SlowTransferWorker)
+
+        window = MainWindow(settings=default_settings)
+        try:
+            with patch.object(window, "_run_transfer_preview"):
+                window._source_zone.load_from_path(sample_image_path)
+                window._reference_zone.load_from_path(sample_image_path)
+
+            with patch.object(window._preview, "set_image") as set_image:
+                window._run_transfer_preview()
+                first = window._transfer_worker
+                window._run_transfer_preview()  # supersedes the running one
+                gc.collect()
+
+                assert first is not None and first.isRunning()
+                assert window._stale_transfer_workers == [first]
+
+                deadline = time.monotonic() + 15
+                while time.monotonic() < deadline and (
+                    window._stale_transfer_workers
+                    or (window._transfer_worker and window._transfer_worker.isRunning())
+                    or not set_image.called
+                ):
+                    qapp.processEvents()
+                    time.sleep(0.01)
+
+                assert window._stale_transfer_workers == []
+                set_image.assert_called_once()  # the stale result was ignored
+        finally:
+            window.stop_workers()

@@ -24,7 +24,6 @@ from PySide6.QtCore import QThread, Signal
 from stealzalut.core.color_transfer import ColorTransferEngine
 from stealzalut.core.lut_engine import generate_neutral_grid
 from stealzalut.core.lut_export import write_cube_file
-from stealzalut.core.xmp_export import write_xmp_profile
 
 logger = logging.getLogger(__name__)
 
@@ -131,31 +130,20 @@ class ExportWorker(QThread):
 
             self.progress.emit(60)
 
-            # ── Phase 4: Write output file (60–100 %) ────────────────────
+            # ── Phase 4: Write output .cube file (60–100 %) ──────────────
             def _write_progress(pct: int) -> None:
                 """Map write progress [0, 100] → [60, 100]."""
                 mapped = 60 + int(pct * 0.4)
                 self.progress.emit(min(mapped, 100))
 
-            if self._output_path.suffix.lower() == ".xmp":
-                logger.debug("Phase 4/4: Writing Lightroom profile (.xmp) file…")
-                result_path = write_xmp_profile(
-                    path=self._output_path,
-                    grid=baked_grid,
-                    size=self._lut_size,
-                    name=self._title,
-                    group=self._group,
-                    progress_callback=_write_progress,
-                )
-            else:
-                logger.debug("Phase 4/4: Writing .cube file…")
-                result_path = write_cube_file(
-                    path=self._output_path,
-                    grid=baked_grid,
-                    size=self._lut_size,
-                    title=self._title,
-                    progress_callback=_write_progress,
-                )
+            logger.debug("Phase 4/4: Writing .cube file…")
+            result_path = write_cube_file(
+                path=self._output_path,
+                grid=baked_grid,
+                size=self._lut_size,
+                title=self._title,
+                progress_callback=_write_progress,
+            )
 
             self.progress.emit(100)
             logger.info("ExportWorker completed — file: %s", result_path)

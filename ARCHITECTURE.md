@@ -39,12 +39,11 @@ StealZaLut/
 │       │   ├── __init__.py
 │       │   ├── color_transfer.py   # Wrapper autour de color-matcher
 │       │   ├── lut_engine.py       # Génération de la grille 3D neutre (numpy)
-│       │   ├── lut_export.py       # Sérialisation au format .cube
-│       │   └── xmp_export.py       # Sérialisation profil Lightroom Classic (.xmp)
+│       │   └── lut_export.py       # Sérialisation au format .cube
 │       │
 │       ├── gui/                # ★ COUCHE PRÉSENTATION (PySide6)
 │       │   ├── __init__.py
-│       │   ├── main_window.py      # Fenêtre principale (boutons .cube & .xmp)
+│       │   ├── main_window.py      # Fenêtre principale (bouton .cube)
 │       │   ├── widgets/
 │       │   │   ├── __init__.py
 │       │   │   ├── image_drop_zone.py  # Widget drag-and-drop
@@ -55,12 +54,12 @@ StealZaLut/
 │       ├── workers/            # ★ COUCHE ASYNCHRONE (QThread + Signals)
 │       │   ├── __init__.py
 │       │   ├── transfer_worker.py  # Thread : calcul du transfert couleur
-│       │   └── export_worker.py    # Thread : baking + export (.cube / .xmp)
+│       │   └── export_worker.py    # Thread : baking + export (.cube)
 │       │
 │       └── utils/              # Utilitaires transverses
 │           ├── __init__.py
 │           ├── paths.py            # Résolution PyInstaller (sys._MEIPASS)
-│           └── image_io.py         # Lecture/écriture images (cv2 + numpy)
+│           └── image_io.py         # Lecture images (RAW, HEIC, standard), dev photo & thumbnails
 │
 ├── tests/                      # Tests unitaires (pytest)
 │   ├── __init__.py
@@ -70,8 +69,7 @@ StealZaLut/
 │   ├── test_lut_engine.py
 │   ├── test_lut_export.py
 │   ├── test_main.py
-│   ├── test_workers.py
-│   └── test_xmp_export.py
+│   └── test_workers.py
 │
 └── assets/                     # Ressources statiques (icônes, images)
     └── icons/
@@ -174,24 +172,16 @@ La grille neutre de taille `N` est un tableau `numpy` de forme `(N³, 3)` dont c
 
 L'utilisateur choisit la taille via un menu déroulant dans la GUI. Le worker transmet cette valeur au `LutEngine` qui génère la grille correspondante.
 
-### 3.5 Export natif de profils Lightroom Classic (.xmp)
+### 3.5 Traitement photographique RAW & DNG haute intensité
 
-En plus de l'export `.cube`, StealZaLut permet l'export direct vers le format de **Profil Lightroom Classic** (`.xmp`, `PresetType="Look"`). Ce format a été rétro-ingénieré depuis Adobe Camera Raw (`CameraRaw.dll`) :
+Pour éviter les rendus sombres et délavés typiques du dématriçage brut linéaire sans profil boîtier :
 
-1. **Interpolation trilinéaire 32³** : Camera Raw exige une table 32×32×32 points. Si la grille d'entrée a une autre résolution (17³, 33³, 64³), elle est rééchantillonnée fidèlement en pur NumPy.
-2. **Encodage différentiel 16 bits BGR** :
-   $$\Delta = \operatorname{clip}\left(\operatorname{round}((\text{cible} - \text{identité}) \times 65535), -32768, 32767\right)$$
-   Ordonnancement des canaux en mémoire : BGR (`int16` little-endian).
-   Ordonnancement des points : Blue le plus lent, Green intermédiaire, Red le plus rapide.
-3. **Structure binaire exacte (196 652 octets décompressés)** :
-   - En-tête de 16 octets : `uint32(1, 1, 3, 32)`.
-   - Table de 196 608 octets ($32^3 \times 3 \times 2$).
-   - Pied de page de 28 octets : `uint32(0, 1, 0, 0, 0)` et `double(2.0)`.
-4. **Compression et encapsulation** :
-   - Compression zlib niveau 9 précédée de 4 octets little-endian de la taille décompressée (`196652 = 0x3002c`, s'encodant en `"Lir00"`).
-   - Encodage Base85 little-endian propriétaire d'Adobe utilisant son alphabet spécifique de 85 caractères.
-   - Calcul de l'empreinte MD5 (majuscule hexadécimale) sur les 196 652 octets décompressés pour `crs:RGBTable` et `crs:Table_<MD5>`.
-   - Enveloppe XML standard Camera Raw avec support du curseur de dosage (`crs:SupportsAmount="True"`).
+1. **Extraction de prévisualisation constructeur** : si le fichier RAW/DNG contient un aperçu JPEG haute résolution (>= 1024 px), StealZaLut l'utilise directement pour bénéficier du traitement colorimétrique natif du boîtier (profils d'image Canon/Sony/Nikon/Fuji/Apple).
+2. **Compensation `BaselineExposure`** : les métadonnées DNG (tag EXIF 50730) sont lues afin d'appliquer le décalage d'exposition prévu par le fabricant ou Adobe.
+3. **Développement photographique adaptatif** :
+   - Rehaussement d'exposition dynamique par courbe gamma pour placer le gris moyen à 18 % au niveau standard sRGB (~40 %).
+   - Courbe tonale en S (courbe filmique smoothstep) pour un contraste riche et naturel.
+   - Rehaussement de vibrance en espace HSV pour préserver et sublimer l'intensité des teintes.
 
 ---
 

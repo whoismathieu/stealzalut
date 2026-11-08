@@ -1,15 +1,19 @@
 # StealZaLut
 
-> Application de bureau professionnelle permettant d'extraire la signature colorimétrique d'une image de référence, de l'appliquer à une image source, et d'exporter le transfert sous forme de profil 3D LUT (`.cube`) ou de profil natif Lightroom Classic (`.xmp`).
+> Application de bureau professionnelle permettant d'extraire la signature colorimétrique d'une image de référence, de l'appliquer à une image source, et d'exporter le transfert sous forme de profil 3D LUT universel (`.cube`).
 
 ---
 
 ## 🚀 Fonctionnalités Clés
 
-* **Choix du Format d'Export : 3D LUT (.cube) ou Profil Lightroom Classic (.xmp) :**
-  * **LUT `.cube` standard :** Exportez uniquement le fichier 3D LUT universel pour DaVinci Resolve, Photoshop, Premiere Pro, Final Cut Pro, OBS.
-  * **Profil natif Lightroom Classic `.xmp` :** Exportez uniquement le profil natif sans passer par Photoshop/Bridge ni manipulation manuelle de Camera Raw. Intègre la table 3D compressée en Base85 propriétaire avec gestion native du curseur de dosage (Amount 0–200 %). Prêt à l'emploi dans `%APPDATA%\Adobe\CameraRaw\Settings`.
-  * **Conversion directe `.cube` vers `.xmp` :** Fonction programmatique `cube_to_xmp()` pour convertir n'importe quel fichier cube existant en profil Lightroom.
+* **Export 3D LUT (.cube) Professionnel :**
+  * Exportez le fichier 3D LUT universel prêt à l'emploi pour DaVinci Resolve, Photoshop, Premiere Pro, Final Cut Pro, OBS.
+  * Résolution configurable (**17³, 33³, ou 64³** points) respectant strictement l'ordre d'itération standard `.cube` (R-rapide, G-moyen, B-lent).
+
+* **Développement RAW & DNG Photographiques Haute Intensité :**
+  * **Extraction des aperçus haute résolution intégrés** générés par les boîtiers photo et smartphones (colorimétrie et profil constructeur natifs).
+  * **Compensation d'exposition DNG `BaselineExposure`** automatique.
+  * **Courbe tonale photographique et rehaussement de vibrance** automatique : élimine les images sombres et ternes issues du dématriçage brut linéaire pour restituer le contraste, l'intensité et la dynamique réels de la scène.
 
 * **Multiples Algorithmes de Transfert Colorimétrique :**
   * **MKL (Monge-Kantorovitch Linear) :** Transport optimal analytique fermé entre distributions gaussiennes (Wasserstein-2).

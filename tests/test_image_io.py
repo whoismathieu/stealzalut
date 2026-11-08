@@ -16,8 +16,10 @@ from stealzalut.utils.image_io import (
     HEIC_EXTENSIONS,
     RAW_EXTENSIONS,
     SUPPORTED_EXTENSIONS,
+    _read_dng_baseline_exposure,
     bgr_to_rgb,
     create_thumbnail,
+    enhance_raw_photographic,
     float_to_uint8,
     load_image_bgr,
     normalize_to_float,
@@ -155,6 +157,95 @@ class TestCameraRawLoading:
         corrupt.write_bytes(b"not a valid raw")
         with pytest.raises(ValueError, match="Failed to decode RAW image"):
             load_image_bgr(corrupt)
+
+    def test_load_raw_uses_embedded_preview_when_available(self, tmp_path: Path) -> None:
+        """When an embedded JPEG preview is high-res, it is used without demosaicing."""
+        raw_path = tmp_path / "sample_preview.cr3"
+        raw_path.write_bytes(b"dummy raw content")
+
+        # Create 1200x1600 JPEG preview
+        preview_img = Image.new("RGB", (1200, 1600), color=(180, 120, 60))
+        import io
+        preview_bytes = io.BytesIO()
+        preview_img.save(preview_bytes, format="JPEG")
+
+        import rawpy
+        mock_thumb = MagicMock()
+        mock_thumb.format = rawpy.ThumbFormat.JPEG  # type: ignore[attr-defined]
+        mock_thumb.data = preview_bytes.getvalue()
+
+        mock_raw = MagicMock()
+        mock_raw.extract_thumb.return_value = mock_thumb
+        mock_raw.__enter__.return_value = mock_raw
+        mock_raw.__exit__.return_value = None
+
+        with patch("rawpy.imread", return_value=mock_raw):
+            bgr = load_image_bgr(raw_path)
+
+        assert bgr.shape == (1600, 1200, 3)
+        # Verify postprocess was not called because embedded preview was used
+        mock_raw.postprocess.assert_not_called()
+
+
+# ── Photographic Raw Enhancement tests ───────────────────────────────────────
+
+
+class TestPhotographicRawEnhancement:
+    """Tests for adaptive exposure, S-curve contrast, and vibrance boost."""
+
+    def test_lifts_dark_image(self) -> None:
+        dark = np.full((100, 100, 3), 35, dtype=np.uint8)
+        enhanced = enhance_raw_photographic(dark)
+
+        # Values should be lifted from ~35 into midtones (> 80)
+        assert enhanced[0, 0, 0] > 70
+        assert enhanced.dtype == np.uint8
+        assert enhanced.shape == (100, 100, 3)
+
+    def test_preserves_black_and_white(self) -> None:
+        black = np.zeros((10, 10, 3), dtype=np.uint8)
+        assert np.all(enhance_raw_photographic(black) == 0)
+
+        white = np.full((10, 10, 3), 255, dtype=np.uint8)
+        assert np.all(enhance_raw_photographic(white) == 255)
+
+    def test_boosts_vibrance(self) -> None:
+        # Create image with subdued color (low saturation)
+        subdued = np.full((20, 20, 3), [100, 120, 140], dtype=np.uint8)  # BGR
+        enhanced = enhance_raw_photographic(subdued)
+
+        # Check HSV saturation
+        hsv_before = cv2.cvtColor(subdued, cv2.COLOR_BGR2HSV)
+        hsv_after = cv2.cvtColor(enhanced, cv2.COLOR_BGR2HSV)
+        assert float(hsv_after[0, 0, 1]) >= float(hsv_before[0, 0, 1])
+
+    def test_edge_cases(self) -> None:
+        empty = np.empty((0, 0, 3), dtype=np.uint8)
+        assert enhance_raw_photographic(empty).size == 0
+
+
+# ── DNG Baseline Exposure tests ──────────────────────────────────────────────
+
+
+class TestDngBaselineExposure:
+    """Tests for reading Adobe DNG BaselineExposure metadata tag."""
+
+    def test_read_baseline_exposure_from_dng(self, tmp_path: Path) -> None:
+        from PIL import TiffImagePlugin
+
+        dng_path = tmp_path / "test_baseline.dng"
+        img = Image.new("RGB", (20, 20), color=(50, 50, 50))
+        ifd = TiffImagePlugin.ImageFileDirectory_v2()
+        ifd[50730] = 1.75  # BaselineExposure
+        img.save(dng_path, format="TIFF", tiffinfo=ifd)
+
+        ev = _read_dng_baseline_exposure(dng_path)
+        assert abs(ev - 1.75) < 1e-4
+
+    def test_read_baseline_exposure_non_dng(self, tmp_path: Path) -> None:
+        jpg_path = tmp_path / "test.jpg"
+        jpg_path.write_bytes(b"dummy")
+        assert _read_dng_baseline_exposure(jpg_path) == 0.0
 
 
 # ── General Image I/O tests ──────────────────────────────────────────────────

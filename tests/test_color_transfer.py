@@ -14,6 +14,7 @@ from stealzalut.core.color_transfer import (
     _compute_mkl_matrix,
     _matrix_sqrt,
     _matrix_sqrt_inv,
+    fit_transfer,
 )
 from stealzalut.core.lut_engine import generate_neutral_grid
 
@@ -218,4 +219,70 @@ class TestColorTransferEngine:
         assert baked.min() >= 0.0 and baked.max() <= 1.0
         assert not np.isnan(baked).any()
         assert not np.isinf(baked).any()
+
+
+# ── Fitted transfer models ───────────────────────────────────────────────────
+
+
+class TestTransferModel:
+    """Tests for fit_transfer / TransferModel (fit once, apply many times)."""
+
+    @pytest.mark.parametrize("method", SUPPORTED_METHODS)
+    def test_model_matches_bake_grid(
+        self,
+        method: str,
+        source_image: np.ndarray,
+        reference_image: np.ndarray,
+    ) -> None:
+        """Applying a fitted model gives the same grid as bake_grid."""
+        engine = ColorTransferEngine(method=method)
+        grid = generate_neutral_grid(17)
+        model = fit_transfer(source_image, reference_image, method=method)
+        assert model.method == method
+        np.testing.assert_array_equal(
+            model.apply(grid), engine.bake_grid(grid, source_image, reference_image)
+        )
+
+    @pytest.mark.parametrize("method", SUPPORTED_METHODS)
+    def test_chunked_apply_equals_full_apply(
+        self,
+        method: str,
+        source_image: np.ndarray,
+        reference_image: np.ndarray,
+    ) -> None:
+        """The export applies the model in chunks: the result must not change."""
+        model = fit_transfer(source_image, reference_image, method=method)
+        grid = generate_neutral_grid(17)
+        chunks = [model.apply(grid[i : i + 500]) for i in range(0, len(grid), 500)]
+        np.testing.assert_array_equal(np.concatenate(chunks), model.apply(grid))
+
+    def test_bake_uses_neutral_grid(
+        self,
+        source_image: np.ndarray,
+        reference_image: np.ndarray,
+    ) -> None:
+        model = fit_transfer(source_image, reference_image)
+        np.testing.assert_array_equal(model.bake(17), model.apply(generate_neutral_grid(17)))
+
+    def test_engine_fit_uses_engine_method(
+        self,
+        source_image: np.ndarray,
+        reference_image: np.ndarray,
+    ) -> None:
+        engine = ColorTransferEngine(method="reinhard")
+        assert engine.fit(source_image, reference_image).method == "reinhard"
+
+    def test_same_image_mkl_is_identity(self, source_image: np.ndarray) -> None:
+        """Transferring an image onto itself leaves in-range colours unchanged."""
+        model = fit_transfer(source_image, source_image, method="mkl")
+        grid = generate_neutral_grid(17)
+        assert_array_almost_equal(model.apply(grid), grid, decimal=6)
+
+    def test_invalid_method_raises(
+        self,
+        source_image: np.ndarray,
+        reference_image: np.ndarray,
+    ) -> None:
+        with pytest.raises(ValueError, match="Unsupported"):
+            fit_transfer(source_image, reference_image, method="nope")
 

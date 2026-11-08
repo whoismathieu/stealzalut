@@ -194,13 +194,14 @@ class MainWindow(QMainWindow):
         self._export_btn.clicked.connect(self._on_export_clicked)
         self._clear_btn.clicked.connect(self._on_clear_all)
 
-        # Algorithm changed
+        # Algorithm or LUT size changed → the previewed grid changes too
         self._algo_combo.currentIndexChanged.connect(self._on_algo_changed)
+        self._size_combo.currentIndexChanged.connect(self._on_algo_changed)
 
     # ── Slots ────────────────────────────────────────────────────────────
 
     def _on_algo_changed(self, _index: int) -> None:
-        """Called when user changes the color transfer algorithm."""
+        """Called when the user changes the algorithm or the LUT size."""
         if self._source_zone.has_image and self._reference_zone.has_image:
             self._run_transfer_preview()
 
@@ -261,6 +262,7 @@ class MainWindow(QMainWindow):
             return
 
         method: str = str(self._algo_combo.currentData())
+        lut_size: int = self._size_combo.currentData()
 
         # Cancel any running transfer
         if self._transfer_worker is not None and self._transfer_worker.isRunning():
@@ -269,7 +271,9 @@ class MainWindow(QMainWindow):
         self._status_bar.showMessage(f"Computing colour transfer preview ({method})…")
         self._progress_bar.setValue(0)
 
-        self._transfer_worker = TransferWorker(source, reference, method=method)
+        self._transfer_worker = TransferWorker(
+            source, reference, method=method, lut_size=lut_size
+        )
         self._transfer_worker.progress.connect(self._on_transfer_progress)
         self._transfer_worker.result_ready.connect(self._on_transfer_result)
         self._transfer_worker.error.connect(self._on_worker_error)

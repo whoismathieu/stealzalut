@@ -1,8 +1,9 @@
 """QThread worker for colour transfer preview computation.
 
-Runs the MKL colour transfer in a background thread so the GUI
-remains responsive during heavy matrix operations.  Communicates
-results back to the main thread exclusively via Qt Signals.
+Builds the same 3D LUT grid that the export would produce and applies it
+to a down-scaled copy of the source image, so the preview shows exactly
+what the exported ``.cube`` file will do.  Runs in a background thread so
+the GUI remains responsive; communicates exclusively via Qt Signals.
 """
 
 from __future__ import annotations
@@ -16,21 +17,26 @@ from numpy.typing import NDArray
 from PySide6.QtCore import QThread, Signal
 
 from stealzalut.core.color_transfer import ColorTransferEngine
+from stealzalut.core.lut_apply import apply_lut
+from stealzalut.utils.image_io import create_thumbnail
 
 logger = logging.getLogger(__name__)
 
+#: Longest edge (px) of the image the preview LUT is applied to.
+PREVIEW_RENDER_MAX_SIZE = 1280
+
 
 class TransferWorker(QThread):
-    """Background worker that applies MKL colour transfer.
+    """Background worker that renders the LUT preview.
 
     Signals:
         progress (int): Percentage complete (0–100).
-        result_ready (object): The transferred RGB uint8 image (ndarray).
+        result_ready (object): The graded RGB uint8 preview image (ndarray).
         error (str): Human-readable error message if the computation fails.
 
     Usage::
 
-        worker = TransferWorker(source_rgb, reference_rgb)
+        worker = TransferWorker(source_rgb, reference_rgb, lut_size=33)
         worker.result_ready.connect(on_preview_ready)
         worker.error.connect(on_error)
         worker.start()
@@ -45,32 +51,39 @@ class TransferWorker(QThread):
         source: NDArray[np.uint8],
         reference: NDArray[np.uint8],
         method: str = "mkl",
+        lut_size: int = 33,
+        render_max_size: int = PREVIEW_RENDER_MAX_SIZE,
         parent: Any = None,
     ) -> None:
         super().__init__(parent)
         self._source = source
         self._reference = reference
         self._method = method
+        self._lut_size = lut_size
+        self._render_max_size = render_max_size
         self._engine = ColorTransferEngine(method=method)
 
     def run(self) -> None:
-        """Execute the colour transfer in the worker thread."""
+        """Fit the transfer, bake the grid and apply it to the preview image."""
         try:
             logger.info(
-                "TransferWorker started — source %s, reference %s, method: %s",
+                "TransferWorker started — source %s, reference %s, method: %s, LUT %d",
                 self._source.shape,
                 self._reference.shape,
                 self._method,
+                self._lut_size,
             )
             self.progress.emit(10)
 
-            # Compute the transferred image via color-matcher
-            result = self._engine.transfer_image(
-                self._source,
-                self._reference,
-                method=self._method,
-            )
-            self.progress.emit(90)
+            model = self._engine.fit(self._source, self._reference, method=self._method)
+            self.progress.emit(60)
+
+            grid = model.bake(self._lut_size)
+            self.progress.emit(75)
+
+            preview_src = create_thumbnail(self._source, max_size=self._render_max_size)
+            result = apply_lut(preview_src, grid, self._lut_size)
+            self.progress.emit(95)
 
             logger.info("TransferWorker completed — result %s", result.shape)
             self.progress.emit(100)

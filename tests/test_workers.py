@@ -20,6 +20,9 @@ import pytest
 from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtWidgets import QApplication
 
+from stealzalut.core.color_transfer import ColorTransferEngine
+from stealzalut.core.lut_apply import apply_lut
+from stealzalut.core.lut_engine import generate_neutral_grid
 from stealzalut.workers.export_worker import ExportWorker
 from stealzalut.workers.transfer_worker import TransferWorker
 
@@ -154,6 +157,45 @@ class TestTransferWorker:
 
         assert len(results) == 1
         assert not np.array_equal(results[0], source_image)
+
+    @pytest.mark.parametrize("method", ["mkl", "hm-mkl-hm"])
+    def test_preview_matches_exported_grid(
+        self,
+        qapp: QApplication,
+        source_image: np.ndarray,
+        reference_image: np.ndarray,
+        method: str,
+    ) -> None:
+        """The preview is the exported LUT applied to the source (WYSIWYG)."""
+        results: list[Any] = []
+
+        worker = TransferWorker(source_image, reference_image, method=method, lut_size=17)
+        worker.result_ready.connect(results.append)
+
+        _run_worker_with_event_loop(worker)
+
+        grid = ColorTransferEngine(method=method).bake_grid(
+            generate_neutral_grid(17), source_image, reference_image
+        )
+        assert len(results) == 1
+        np.testing.assert_array_equal(results[0], apply_lut(source_image, grid, 17))
+
+    def test_preview_is_downscaled(
+        self,
+        qapp: QApplication,
+        reference_image: np.ndarray,
+    ) -> None:
+        """Large sources are previewed on a thumbnail, not at full resolution."""
+        big_source = _make_synthetic_image(mean=(150, 120, 90), std=30, h=300, w=200)
+        results: list[Any] = []
+
+        worker = TransferWorker(big_source, reference_image, render_max_size=100)
+        worker.result_ready.connect(results.append)
+
+        _run_worker_with_event_loop(worker)
+
+        assert len(results) == 1
+        assert max(results[0].shape[:2]) == 100
 
 
 # ── ExportWorker tests ───────────────────────────────────────────────────────

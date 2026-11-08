@@ -4,9 +4,11 @@ This module provides two complementary capabilities:
 
 1. **Image transfer** — apply the MKL color transfer between a source
    and a reference image via the ``color-matcher`` library (for preview).
-2. **Affine transform extraction** — compute the underlying 3×3 linear
-   transport matrix so it can be applied to an arbitrary set of colours
-   (for 3D LUT baking).
+2. **Fitted transfer models** — :func:`fit_transfer` reads the two images
+   once and returns a :class:`TransferModel` that maps arbitrary colours
+   (a 3D LUT grid of any size, in any number of chunks).  The live preview
+   and the ``.cube`` export both go through the same model, so the preview
+   shows exactly what is exported.
 
 The MKL (Monge–Kantorovitch Linear) method models each image's colour
 distribution as a multivariate Gaussian and finds the *optimal linear
@@ -20,12 +22,15 @@ map* (in the Wasserstein-2 sense) between the two distributions.
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import cast
 
 import numpy as np
 from color_matcher import ColorMatcher
 from numpy.typing import NDArray
+
+from stealzalut.core.lut_engine import generate_neutral_grid
 
 # ── Data structures ──────────────────────────────────────────────────────────
 
@@ -162,7 +167,21 @@ class ColorTransferEngine:
                 f"Unsupported color transfer method '{chosen_method}'. "
                 f"Supported: {', '.join(SUPPORTED_METHODS)}"
             )
-        return _bake_grid_impl(grid, source, reference, chosen_method)
+        return self.fit(source, reference, method=chosen_method).apply(grid)
+
+    def fit(
+        self,
+        source: NDArray[np.uint8],
+        reference: NDArray[np.uint8],
+        method: str | None = None,
+    ) -> TransferModel:
+        """Fit a reusable :class:`TransferModel` (see :func:`fit_transfer`).
+
+        Prefer this over :meth:`bake_grid` when the same transfer is applied
+        several times (chunked export, preview + export): the image
+        statistics are computed only once.
+        """
+        return fit_transfer(source, reference, method=method or self.method)
 
     # ── Affine transform extraction (pure numpy) ─────────────────────────
 
@@ -191,22 +210,7 @@ class ColorTransferEngine:
         Returns:
             An :class:`AffineTransform` holding the matrix and means.
         """
-        src_pixels = source.reshape(-1, 3).astype(np.float64) / 255.0
-        ref_pixels = reference.reshape(-1, 3).astype(np.float64) / 255.0
-
-        mu_s = src_pixels.mean(axis=0)
-        mu_r = ref_pixels.mean(axis=0)
-
-        cov_s = np.asarray(np.cov(src_pixels, rowvar=False), dtype=np.float64)
-        cov_r = np.asarray(np.cov(ref_pixels, rowvar=False), dtype=np.float64)
-
-        transport_matrix = _compute_mkl_matrix(cov_s, cov_r)
-
-        return AffineTransform(
-            matrix=transport_matrix,
-            src_mean=mu_s,
-            ref_mean=mu_r,
-        )
+        return _fit_affine_transform(source, reference)
 
     # ── Apply precomputed transform ──────────────────────────────────────
 
@@ -287,84 +291,236 @@ def _compute_mkl_matrix(
     return sqrt_s_inv @ sqrt_inner @ sqrt_s_inv
 
 
-def _bake_grid_impl(
-    grid: NDArray[np.float64],
+def _to_float_pixels(image: NDArray[np.uint8]) -> NDArray[np.float64]:
+    """Flatten an RGB uint8 image to ``(N, 3)`` float64 in [0, 1]."""
+    return image.reshape(-1, 3).astype(np.float64) / 255.0
+
+
+def _fit_affine_transform(
     source: NDArray[np.uint8],
     reference: NDArray[np.uint8],
-    method: str,
-) -> NDArray[np.float64]:
-    """Execute grid baking for the specified transfer algorithm."""
-    if method in ("mkl", "mvgd", "default"):
-        src_pixels = source.reshape(-1, 3).astype(np.float64) / 255.0
-        ref_pixels = reference.reshape(-1, 3).astype(np.float64) / 255.0
-        mu_s = src_pixels.mean(axis=0)
-        mu_r = ref_pixels.mean(axis=0)
-        cov_s = np.asarray(np.cov(src_pixels, rowvar=False), dtype=np.float64)
-        cov_r = np.asarray(np.cov(ref_pixels, rowvar=False), dtype=np.float64)
-        transport_matrix = _compute_mkl_matrix(cov_s, cov_r)
-        centered = grid - mu_s
-        result = centered @ transport_matrix.T + mu_r
-        return cast("NDArray[np.float64]", np.clip(result, 0.0, 1.0))
+) -> AffineTransform:
+    """Fit the closed-form MKL affine transform between two images."""
+    src_pixels = _to_float_pixels(source)
+    ref_pixels = _to_float_pixels(reference)
+    cov_s = np.asarray(np.cov(src_pixels, rowvar=False), dtype=np.float64)
+    cov_r = np.asarray(np.cov(ref_pixels, rowvar=False), dtype=np.float64)
+    return AffineTransform(
+        matrix=_compute_mkl_matrix(cov_s, cov_r),
+        src_mean=src_pixels.mean(axis=0),
+        ref_mean=ref_pixels.mean(axis=0),
+    )
 
-    if method == "reinhard":
-        from color_matcher.reinhard_matcher import LMS_MAT, LMS_MAT_INV
 
-        s_flat = np.maximum(source.reshape((-1, 3)).T.astype(np.float64) / 255.0, 1.0 / 255.0)
-        r_flat = np.maximum(reference.reshape((-1, 3)).T.astype(np.float64) / 255.0, 1.0 / 255.0)
+# ── Fitted transfer models ───────────────────────────────────────────────────
+#
+# A model holds everything derived from the two images.  It is fitted once
+# (the expensive part: statistics over every pixel) and can then be applied
+# to any set of colours — a LUT grid of any size, in as many chunks as needed.
 
-        b = np.array(
-            [
-                [1.0 / np.sqrt(3), 0.0, 0.0],
-                [0.0, 1.0 / np.sqrt(6), 0.0],
-                [0.0, 0.0, 1.0 / np.sqrt(2)],
-            ]
-        )
-        c = np.array([[1.0, 1.0, 1.0], [1.0, 1.0, -2.0], [1.0, -1.0, 0.0]])
-        bc = b @ c
-        cb = c.T @ b
 
-        lab_s = bc @ np.log10(LMS_MAT @ s_flat)
-        lab_r = bc @ np.log10(LMS_MAT @ r_flat)
+class TransferModel(ABC):
+    """A colour transfer fitted on a source/reference pair."""
 
-        mean_s, std_s = np.mean(lab_s, axis=1), np.std(lab_s, axis=1)
-        mean_r, std_r = np.mean(lab_r, axis=1), np.std(lab_r, axis=1)
-        std_ratios = std_r / np.maximum(std_s, 1e-12)
+    __slots__ = ()
 
-        p_flat = np.maximum(grid.T, 1.0 / 255.0)
-        lab_p = bc @ np.log10(LMS_MAT @ p_flat)
-        lab_trans = ((lab_p.T - mean_s) * std_ratios + mean_r).T
-        lms_res = 10.0 ** (cb @ lab_trans)
-        rgb_res = (LMS_MAT_INV @ lms_res).T
+    @property
+    @abstractmethod
+    def method(self) -> str:
+        """Name of the transfer method this model implements."""
+
+    @abstractmethod
+    def apply(self, colors: NDArray[np.float64]) -> NDArray[np.float64]:
+        """Map colours ``(N, 3)`` in [0, 1] to transferred colours, clamped."""
+
+    def bake(self, size: int) -> NDArray[np.float64]:
+        """Bake the model onto a neutral grid of *size*³ points."""
+        return self.apply(generate_neutral_grid(size))
+
+
+@dataclass(frozen=True, slots=True)
+class AffineTransferModel(TransferModel):
+    """MKL optimal-transport affine map ``y = T (x − μ_s) + μ_r``."""
+
+    transform: AffineTransform
+    method_name: str = "mkl"
+
+    @property
+    def method(self) -> str:
+        return self.method_name
+
+    def apply(self, colors: NDArray[np.float64]) -> NDArray[np.float64]:
+        return ColorTransferEngine.apply_affine(colors, self.transform)
+
+
+@dataclass(frozen=True, slots=True)
+class ReinhardTransferModel(TransferModel):
+    """Reinhard statistics alignment in Ruderman's log-LMS lαβ space."""
+
+    mean_s: NDArray[np.float64]
+    mean_r: NDArray[np.float64]
+    std_ratios: NDArray[np.float64]
+
+    @property
+    def method(self) -> str:
+        return "reinhard"
+
+    def apply(self, colors: NDArray[np.float64]) -> NDArray[np.float64]:
+        lms_mat, lms_mat_inv = _reinhard_lms_matrices()
+        p_flat = np.maximum(colors.T, 1.0 / 255.0)
+        lab_p = _REINHARD_BC @ np.log10(lms_mat @ p_flat)
+        lab_trans = ((lab_p.T - self.mean_s) * self.std_ratios + self.mean_r).T
+        lms_res = 10.0 ** (_REINHARD_CB @ lab_trans)
+        rgb_res = (lms_mat_inv @ lms_res).T
         return cast("NDArray[np.float64]", np.clip(rgb_res, 0.0, 1.0))
 
-    if method == "hm":
-        baked = np.zeros_like(grid)
+
+@dataclass(frozen=True, slots=True)
+class HistogramTransferModel(TransferModel):
+    """Per-channel histogram matching, stored as three 1-D lookup curves."""
+
+    src_values: tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]
+    mapped_values: tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]
+
+    @property
+    def method(self) -> str:
+        return "hm"
+
+    def apply(self, colors: NDArray[np.float64]) -> NDArray[np.float64]:
+        out = np.empty_like(colors)
         for ch in range(3):
-            s_vec = source[..., ch].ravel()
-            r_vec = reference[..., ch].ravel()
-            _, s_cnts = np.unique(s_vec, return_counts=True)
-            r_vals, r_cnts = np.unique(r_vec, return_counts=True)
-            s_cdf = np.cumsum(s_cnts).astype(np.float64) / s_vec.size
-            r_cdf = np.cumsum(r_cnts).astype(np.float64) / r_vec.size
-            interp_vals = np.interp(s_cdf, r_cdf, r_vals) / 255.0
-            s_vals = np.unique(s_vec).astype(np.float64) / 255.0
-            baked[:, ch] = np.interp(grid[:, ch], s_vals, interp_vals)
-        return cast("NDArray[np.float64]", np.clip(baked, 0.0, 1.0))
+            out[:, ch] = np.interp(colors[:, ch], self.src_values[ch], self.mapped_values[ch])
+        return cast("NDArray[np.float64]", np.clip(out, 0.0, 1.0))
 
-    if method in ("hm-mkl-hm", "hm-mvgd-hm"):
-        g1 = _bake_grid_impl(grid, source, reference, "hm")
-        s1_flat = _bake_grid_impl(
-            source.reshape(-1, 3).astype(np.float64) / 255.0, source, reference, "hm"
-        )
-        s1 = np.clip(s1_flat * 255.0, 0, 255).astype(np.uint8).reshape(source.shape)
 
-        g2 = _bake_grid_impl(g1, s1, reference, "mkl")
-        s2_flat = _bake_grid_impl(
-            s1.reshape(-1, 3).astype(np.float64) / 255.0, s1, reference, "mkl"
-        )
-        s2 = np.clip(s2_flat * 255.0, 0, 255).astype(np.uint8).reshape(source.shape)
+@dataclass(frozen=True, slots=True)
+class ChainedTransferModel(TransferModel):
+    """Several models applied one after another (e.g. HM → MKL → HM)."""
 
-        return _bake_grid_impl(g2, s2, reference, "hm")
+    steps: tuple[TransferModel, ...]
+    method_name: str
 
-    raise ValueError(f"Unknown color transfer method: {method}")
+    @property
+    def method(self) -> str:
+        return self.method_name
+
+    def apply(self, colors: NDArray[np.float64]) -> NDArray[np.float64]:
+        for step in self.steps:
+            colors = step.apply(colors)
+        return colors
+
+
+# ── Reinhard constants ───────────────────────────────────────────────────────
+
+_REINHARD_B = np.array(
+    [
+        [1.0 / np.sqrt(3), 0.0, 0.0],
+        [0.0, 1.0 / np.sqrt(6), 0.0],
+        [0.0, 0.0, 1.0 / np.sqrt(2)],
+    ]
+)
+_REINHARD_C = np.array([[1.0, 1.0, 1.0], [1.0, 1.0, -2.0], [1.0, -1.0, 0.0]])
+_REINHARD_BC = _REINHARD_B @ _REINHARD_C
+_REINHARD_CB = _REINHARD_C.T @ _REINHARD_B
+
+
+def _reinhard_lms_matrices() -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """RGB↔LMS matrices used by color-matcher's Reinhard implementation."""
+    from color_matcher.reinhard_matcher import LMS_MAT, LMS_MAT_INV
+
+    return LMS_MAT, LMS_MAT_INV
+
+
+# ── Fitting ──────────────────────────────────────────────────────────────────
+
+
+def _fit_reinhard(
+    source: NDArray[np.uint8],
+    reference: NDArray[np.uint8],
+) -> ReinhardTransferModel:
+    lms_mat, _ = _reinhard_lms_matrices()
+    s_flat = np.maximum(_to_float_pixels(source).T, 1.0 / 255.0)
+    r_flat = np.maximum(_to_float_pixels(reference).T, 1.0 / 255.0)
+    lab_s = _REINHARD_BC @ np.log10(lms_mat @ s_flat)
+    lab_r = _REINHARD_BC @ np.log10(lms_mat @ r_flat)
+    std_s = np.std(lab_s, axis=1)
+    std_r = np.std(lab_r, axis=1)
+    return ReinhardTransferModel(
+        mean_s=np.mean(lab_s, axis=1),
+        mean_r=np.mean(lab_r, axis=1),
+        std_ratios=std_r / np.maximum(std_s, 1e-12),
+    )
+
+
+def _fit_histogram(
+    source: NDArray[np.uint8],
+    reference: NDArray[np.uint8],
+) -> HistogramTransferModel:
+    src_values: list[NDArray[np.float64]] = []
+    mapped_values: list[NDArray[np.float64]] = []
+    for ch in range(3):
+        s_vec = source[..., ch].ravel()
+        r_vec = reference[..., ch].ravel()
+        s_vals, s_cnts = np.unique(s_vec, return_counts=True)
+        r_vals, r_cnts = np.unique(r_vec, return_counts=True)
+        s_cdf = np.cumsum(s_cnts).astype(np.float64) / s_vec.size
+        r_cdf = np.cumsum(r_cnts).astype(np.float64) / r_vec.size
+        mapped_values.append(np.interp(s_cdf, r_cdf, r_vals) / 255.0)
+        src_values.append(s_vals.astype(np.float64) / 255.0)
+    return HistogramTransferModel(
+        src_values=(src_values[0], src_values[1], src_values[2]),
+        mapped_values=(mapped_values[0], mapped_values[1], mapped_values[2]),
+    )
+
+
+def _transform_image(model: TransferModel, image: NDArray[np.uint8]) -> NDArray[np.uint8]:
+    """Apply *model* to every pixel of *image* (truncating back to uint8)."""
+    flat = model.apply(_to_float_pixels(image))
+    return np.clip(flat * 255.0, 0, 255).astype(np.uint8).reshape(image.shape)
+
+
+def fit_transfer(
+    source: NDArray[np.uint8],
+    reference: NDArray[np.uint8],
+    method: str = "mkl",
+) -> TransferModel:
+    """Fit a colour transfer model on a source/reference pair.
+
+    This is the only step that reads the images.  The returned model can be
+    applied to any colours (typically a LUT grid) without re-reading them.
+
+    Args:
+        source: Source image, **RGB** uint8, shape ``(H, W, 3)``.
+        reference: Reference image, **RGB** uint8, shape ``(H, W, 3)``.
+        method: One of :data:`SUPPORTED_METHODS`.
+
+    Returns:
+        The fitted :class:`TransferModel`.
+
+    Raises:
+        ValueError: If *method* is not supported.
+    """
+    chosen = method.lower()
+    if chosen in ("mkl", "mvgd", "default"):
+        return AffineTransferModel(_fit_affine_transform(source, reference), method_name=chosen)
+
+    if chosen == "reinhard":
+        return _fit_reinhard(source, reference)
+
+    if chosen == "hm":
+        return _fit_histogram(source, reference)
+
+    if chosen in ("hm-mkl-hm", "hm-mvgd-hm"):
+        first_hm = _fit_histogram(source, reference)
+        stage1 = _transform_image(first_hm, source)
+        affine = AffineTransferModel(_fit_affine_transform(stage1, reference))
+        stage2 = _transform_image(affine, stage1)
+        last_hm = _fit_histogram(stage2, reference)
+        return ChainedTransferModel(steps=(first_hm, affine, last_hm), method_name=chosen)
+
+    raise ValueError(
+        f"Unsupported color transfer method '{method}'. "
+        f"Supported: {', '.join(SUPPORTED_METHODS)}"
+    )
+
 

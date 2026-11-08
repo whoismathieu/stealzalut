@@ -1,9 +1,9 @@
 """QThread worker for 3D LUT generation and .cube export.
 
 Runs the full LUT pipeline in a background thread:
-  1. Compute the MKL affine transform from source/reference.
+  1. Fit the transfer model on source/reference (image statistics, once).
   2. Generate a neutral 3D grid at the requested resolution.
-  3. Bake the transform onto every grid point.
+  3. Apply the fitted model to every grid point (chunked for progress).
   4. Write the resulting grid to a ``.cube`` file on disk.
 
 Progress is reported granularly across all four phases via the
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 
 # ── Progress allocation across phases ────────────────────────────────────────
-# Phase 1: Affine transform computation   →  0 – 20 %
+# Phase 1: Transfer model fitting         →  0 – 20 %
 # Phase 2: Neutral grid generation         → 20 – 30 %
 # Phase 3: Grid baking (apply transform)  → 30 – 60 %
 # Phase 4: .cube file writing             → 60 – 100 %
@@ -97,6 +97,7 @@ class ExportWorker(QThread):
             # ── Phase 1: Prepare color transfer parameters (0–20 %) ──────
             self.progress.emit(0)
             logger.debug("Phase 1/4: Analyzing color distributions for %s…", self._method)
+            model = self._engine.fit(self._source, self._reference, method=self._method)
             self.progress.emit(20)
 
             # ── Phase 2: Generate neutral grid (20–30 %) ─────────────────
@@ -118,12 +119,7 @@ class ExportWorker(QThread):
 
             for start in range(0, total_points, chunk_size):
                 end = min(start + chunk_size, total_points)
-                baked_grid[start:end] = self._engine.bake_grid(
-                    grid[start:end],
-                    self._source,
-                    self._reference,
-                    method=self._method,
-                )
+                baked_grid[start:end] = model.apply(grid[start:end])
                 # Map [0, total_points] → [30, 60]
                 phase_pct = int((end / total_points) * 30)
                 self.progress.emit(30 + phase_pct)

@@ -30,6 +30,7 @@ import numpy as np
 from color_matcher import ColorMatcher
 from numpy.typing import NDArray
 
+from stealzalut.core.colorspace import gamut_compress, oklab_to_srgb, srgb_to_oklab
 from stealzalut.core.lut_engine import generate_neutral_grid
 
 # ── Data structures ──────────────────────────────────────────────────────────
@@ -53,6 +54,7 @@ class AffineTransform:
 # ── Method definitions ───────────────────────────────────────────────────────
 
 SUPPORTED_METHODS: tuple[str, ...] = (
+    "oklab",
     "mkl",
     "reinhard",
     "hm",
@@ -63,6 +65,7 @@ SUPPORTED_METHODS: tuple[str, ...] = (
 )
 
 METHOD_LABELS: dict[str, str] = {
+    "oklab": "Oklab (luminance / couleur séparées)",
     "mkl": "Monge–Kantorovitch (MKL)",
     "reinhard": "Reinhard (Lab Stats)",
     "hm": "Histogram Matching (HM)",
@@ -71,6 +74,17 @@ METHOD_LABELS: dict[str, str] = {
     "hm-mvgd-hm": "Hybrid (HM + MVGD + HM)",
     "default": "Default (ColorMatcher)",
 }
+
+
+#: Methods implemented by the ``color-matcher`` library (image-level transfer).
+COLOR_MATCHER_METHODS: frozenset[str] = frozenset(SUPPORTED_METHODS) - {"oklab"}
+
+#: Bounds on the per-axis scaling of the Oklab transfer.  Without them a
+#: nearly uniform image (tiny variance) makes the transform explode.
+OKLAB_SCALE_LIMITS: tuple[float, float] = (0.5, 2.0)
+
+#: Pixels used to fit the Oklab statistics (deterministic stride subsample).
+OKLAB_FIT_MAX_PIXELS = 1_000_000
 
 
 # ── Engine ───────────────────────────────────────────────────────────────────
@@ -136,6 +150,13 @@ class ColorTransferEngine:
             raise ValueError(
                 f"Unsupported color transfer method '{chosen_method}'. "
                 f"Supported: {', '.join(SUPPORTED_METHODS)}"
+            )
+        if chosen_method not in COLOR_MATCHER_METHODS:
+            model = fit_transfer(source, reference, method=chosen_method)
+            flat = model.apply(_to_float_pixels(source))
+            return cast(
+                "NDArray[np.uint8]",
+                (flat * 255.0 + 0.5).astype(np.uint8).reshape(source.shape),
             )
         cm = ColorMatcher()
         result = cm.transfer(src=source, ref=reference, method=chosen_method)
@@ -410,6 +431,37 @@ class ChainedTransferModel(TransferModel):
         return colors
 
 
+@dataclass(frozen=True, slots=True)
+class OklabTransferModel(TransferModel):
+    """Decoupled transfer in Oklab: lightness and chroma are matched separately.
+
+    * Lightness:  ``L' = μr_L + κ · (L − μs_L)`` with ``κ = σr_L / σs_L``
+      (bounded by :data:`OKLAB_SCALE_LIMITS`).
+    * Chroma:     ``ab' = μr_ab + T_ab · (ab − μs_ab)`` where ``T_ab`` is the
+      2×2 Monge–Kantorovitch map between the chroma covariances, with its
+      eigenvalues bounded by :data:`OKLAB_SCALE_LIMITS`.
+
+    Splitting the two lets the user dose "borrow the colours" and "borrow
+    the contrast" independently (see :mod:`stealzalut.core.grading`).
+    """
+
+    src_mean: NDArray[np.float64]  # (3,) Oklab
+    ref_mean: NDArray[np.float64]  # (3,) Oklab
+    lightness_scale: float
+    chroma_matrix: NDArray[np.float64]  # (2, 2)
+
+    @property
+    def method(self) -> str:
+        return "oklab"
+
+    def apply(self, colors: NDArray[np.float64]) -> NDArray[np.float64]:
+        lab = srgb_to_oklab(colors)
+        out = np.empty_like(lab)
+        out[:, 0] = self.ref_mean[0] + self.lightness_scale * (lab[:, 0] - self.src_mean[0])
+        out[:, 1:] = self.ref_mean[1:] + (lab[:, 1:] - self.src_mean[1:]) @ self.chroma_matrix.T
+        return oklab_to_srgb(gamut_compress(out))
+
+
 # ── Reinhard constants ───────────────────────────────────────────────────────
 
 _REINHARD_B = np.array(
@@ -449,6 +501,45 @@ def _fit_reinhard(
         mean_s=np.mean(lab_s, axis=1),
         mean_r=np.mean(lab_r, axis=1),
         std_ratios=std_r / np.maximum(std_s, 1e-12),
+    )
+
+
+def _oklab_pixels(image: NDArray[np.uint8]) -> NDArray[np.float64]:
+    """Oklab values of (a deterministic subsample of) an image's pixels."""
+    flat = image.reshape(-1, 3)
+    stride = max(1, -(-flat.shape[0] // OKLAB_FIT_MAX_PIXELS))  # ceil division
+    return srgb_to_oklab(flat[::stride].astype(np.float64) / 255.0)
+
+
+def _bound_symmetric(matrix: NDArray[np.float64], lo: float, hi: float) -> NDArray[np.float64]:
+    """Clip the eigenvalues of a symmetric matrix to ``[lo, hi]``."""
+    eigenvalues, eigenvectors = np.linalg.eigh(0.5 * (matrix + matrix.T))
+    res = eigenvectors @ np.diag(np.clip(eigenvalues, lo, hi)) @ eigenvectors.T
+    return cast("NDArray[np.float64]", res)
+
+
+def _fit_oklab(
+    source: NDArray[np.uint8],
+    reference: NDArray[np.uint8],
+) -> OklabTransferModel:
+    lab_s = _oklab_pixels(source)
+    lab_r = _oklab_pixels(reference)
+    lo, hi = OKLAB_SCALE_LIMITS
+
+    sigma_s = float(np.std(lab_s[:, 0]))
+    sigma_r = float(np.std(lab_r[:, 0]))
+    lightness_scale = float(np.clip(sigma_r / max(sigma_s, 1e-6), lo, hi))
+
+    reg = 1e-8 * np.eye(2)
+    cov_s = np.asarray(np.cov(lab_s[:, 1:], rowvar=False), dtype=np.float64) + reg
+    cov_r = np.asarray(np.cov(lab_r[:, 1:], rowvar=False), dtype=np.float64) + reg
+    chroma_matrix = _bound_symmetric(_compute_mkl_matrix(cov_s, cov_r), lo, hi)
+
+    return OklabTransferModel(
+        src_mean=lab_s.mean(axis=0),
+        ref_mean=lab_r.mean(axis=0),
+        lightness_scale=lightness_scale,
+        chroma_matrix=chroma_matrix,
     )
 
 
@@ -501,6 +592,9 @@ def fit_transfer(
         ValueError: If *method* is not supported.
     """
     chosen = method.lower()
+    if chosen == "oklab":
+        return _fit_oklab(source, reference)
+
     if chosen in ("mkl", "mvgd", "default"):
         return AffineTransferModel(_fit_affine_transform(source, reference), method_name=chosen)
 

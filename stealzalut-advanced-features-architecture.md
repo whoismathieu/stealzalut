@@ -360,7 +360,7 @@ Coût : 33³ ≈ 36 000 points × 9 composantes, quelques millisecondes. L'aper�
 `smoothstep(x, e0, e1)` = transition douce de 0 à 1. On calcule sur la couleur **d'entrée** (le point de la grille neutre).
 
 - **Préserver les neutres** (slider 0–1, défaut 0.5) : `m_n = preserve · (1 − smoothstep(C_in, 0.02, 0.06))`, qui multiplie la composante **ab** du déplacement par `(1 − m_n)`. Les gris restent gris (balance des blancs conservée) ; la luminance reste libre.
-- **Protection peau** (slider 0–1, défaut 0.5) : en Oklch, les tons chair sont autour de **h ≈ 35°–80°, C ≈ 0.03–0.15, L ≈ 0.35–0.92** (exemple calculé : sRGB (224,172,140) → L 0.78, C 0.075, h 53°). Masque = produit de fenêtres douces sur h, C, L. Il réduit le déplacement ab de `m_s` et le déplacement L de `0.5·m_s`. **Valeurs à calibrer** sur un petit jeu de visages variés (carnations claires à foncées) : écrire un test qui vérifie que ces couleurs tombent dans le masque.
+- **Protection peau** (slider 0–1, défaut 0.5) : en Oklch, les tons chair sont autour de **h ≈ 35°–80°, C ≈ 0.03–0.15, L ≈ 0.35–0.92** (exemple calculé : sRGB (224,172,140) → L 0.78, C 0.075, h 53°). Masque = produit de fenêtres douces sur h, C, L. Il réduit **uniquement** le déplacement ab de `m_s`. Atténuer aussi L crée des inversions de luminosité : la peau reste claire pendant que ses voisines s'assombrissent (constaté en phase 1 : ~5 % d'arêtes repliées, que le lissage ne rattrape pas). **Valeurs à calibrer** sur un petit jeu de visages variés (carnations claires à foncées) : écrire un test qui vérifie que ces couleurs tombent dans le masque.
 - **Verrouiller une zone** (dans la table) : `Δ_k = 0`. C'est la protection la plus fiable, puisque l'utilisateur voit la zone surlignée.
 
 ### 4.6. `core/regularize.py` — grille lisse et sans repliement
@@ -384,7 +384,7 @@ def smooth_field(delta: F64, size: int, sigma_cells: float) -> F64:
 ```
 
 - `sigma_cells = lissage × (size − 1) / 32`, pour un résultat indépendant de la résolution de la LUT. Défaut `lissage = 1.0`.
-- **Contrôle de repliement** : sur la grille `(N, N, N)`, la luminance de sortie doit être non décroissante le long de chaque axe R, G, B. Calculer la fraction de violations (`np.diff(L_out, axis) < -1e-3`). Si elle dépasse 0.5 %, augmenter automatiquement le lissage (×1.5, au plus 3 fois) et afficher un avertissement discret.
+- **Contrôle de repliement** : sur la grille `(N, N, N)`, la luminance de sortie doit être non décroissante le long de chaque axe R, G, B. Calculer la fraction de violations (`np.diff(L_out, axis) < -1e-3`). Si elle dépasse celle du transfert brut de plus de 0.5 %, augmenter automatiquement le lissage (départ 0.5, ×2, au plus 3 fois) et afficher un avertissement discret. Implémenté en phase 1 (`core/regularize.py`, `core/grading.py`).
 
 ### 4.7. Détection des conflits (limite de la LUT)
 

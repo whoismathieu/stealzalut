@@ -1,8 +1,10 @@
 """QThread worker for colour transfer preview computation.
 
-Builds the same 3D LUT grid that the export would produce and applies it
-to a down-scaled copy of the source image, so the preview shows exactly
-what the exported ``.cube`` file will do.  Runs in a background thread so
+Builds the same 3D LUT grid that the export would produce (transfer model
++ user adjustments) and applies it to a down-scaled copy of the source
+image, so the preview shows exactly what the exported ``.cube`` file will
+do.  A previously fitted model can be passed in: moving a slider then only
+rebuilds the grid, which takes a fraction of a second.  Runs in a background thread so
 the GUI remains responsive; communicates exclusively via Qt Signals.
 """
 
@@ -16,7 +18,8 @@ import numpy as np
 from numpy.typing import NDArray
 from PySide6.QtCore import QThread, Signal
 
-from stealzalut.core.color_transfer import ColorTransferEngine
+from stealzalut.core.color_transfer import ColorTransferEngine, TransferModel
+from stealzalut.core.grading import GradingParams, build_grid
 from stealzalut.core.lut_apply import apply_lut
 from stealzalut.utils.image_io import create_thumbnail
 
@@ -31,6 +34,9 @@ class TransferWorker(QThread):
 
     Signals:
         progress (int): Percentage complete (0–100).
+        model_ready (object): The fitted :class:`TransferModel`, emitted only
+            when it was computed by this worker (not when passed in).
+        grid_ready (object): The :class:`GridResult` (grid + diagnostics).
         result_ready (object): The graded RGB uint8 preview image (ndarray).
         error (str): Human-readable error message if the computation fails.
 
@@ -43,6 +49,8 @@ class TransferWorker(QThread):
     """
 
     progress = Signal(int)
+    model_ready = Signal(object)
+    grid_ready = Signal(object)
     result_ready = Signal(object)
     error = Signal(str)
 
@@ -53,6 +61,8 @@ class TransferWorker(QThread):
         method: str = "mkl",
         lut_size: int = 33,
         render_max_size: int = PREVIEW_RENDER_MAX_SIZE,
+        params: GradingParams | None = None,
+        model: TransferModel | None = None,
         parent: Any = None,
     ) -> None:
         super().__init__(parent)
@@ -61,6 +71,8 @@ class TransferWorker(QThread):
         self._method = method
         self._lut_size = lut_size
         self._render_max_size = render_max_size
+        self._params = params or GradingParams()
+        self._model = model
         self._engine = ColorTransferEngine(method=method)
 
     def run(self) -> None:
@@ -75,14 +87,18 @@ class TransferWorker(QThread):
             )
             self.progress.emit(10)
 
-            model = self._engine.fit(self._source, self._reference, method=self._method)
+            model = self._model
+            if model is None:
+                model = self._engine.fit(self._source, self._reference, method=self._method)
+                self.model_ready.emit(model)
             self.progress.emit(60)
 
-            grid = model.bake(self._lut_size)
+            grid_result = build_grid(model, self._lut_size, self._params)
+            self.grid_ready.emit(grid_result)
             self.progress.emit(75)
 
             preview_src = create_thumbnail(self._source, max_size=self._render_max_size)
-            result = apply_lut(preview_src, grid, self._lut_size)
+            result = apply_lut(preview_src, grid_result.grid, self._lut_size)
             self.progress.emit(95)
 
             logger.info("TransferWorker completed — result %s", result.shape)

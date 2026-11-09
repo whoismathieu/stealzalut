@@ -11,6 +11,7 @@ from stealzalut.core.color_transfer import (
     SUPPORTED_METHODS,
     AffineTransform,
     ColorTransferEngine,
+    OklabTransferModel,
     _compute_mkl_matrix,
     _matrix_sqrt,
     _matrix_sqrt_inv,
@@ -185,7 +186,7 @@ class TestColorTransferEngine:
 
     def test_supported_methods_constants(self) -> None:
         """SUPPORTED_METHODS and METHOD_LABELS have matching keys."""
-        assert len(SUPPORTED_METHODS) == 7
+        assert len(SUPPORTED_METHODS) == 8
         for m in SUPPORTED_METHODS:
             assert m in METHOD_LABELS
 
@@ -286,3 +287,42 @@ class TestTransferModel:
         with pytest.raises(ValueError, match="Unsupported"):
             fit_transfer(source_image, reference_image, method="nope")
 
+
+
+# ── Oklab decoupled transfer ─────────────────────────────────────────────────
+
+
+class TestOklabTransfer:
+    def test_same_image_is_near_identity(self, source_image: np.ndarray) -> None:
+        model = fit_transfer(source_image, source_image, method="oklab")
+        grid = generate_neutral_grid(17)
+        np.testing.assert_allclose(model.apply(grid), grid, atol=1e-4)
+
+    def test_scales_are_bounded(self) -> None:
+        """A flat image must not make the transform explode."""
+        flat = np.full((32, 32, 3), 128, dtype=np.uint8)
+        rng = np.random.default_rng(0)
+        busy = rng.integers(0, 256, (32, 32, 3), dtype=np.uint8)
+        model = fit_transfer(flat, busy, method="oklab")
+        assert isinstance(model, OklabTransferModel)
+        assert 0.5 <= model.lightness_scale <= 2.0
+        eigenvalues = np.linalg.eigvalsh(model.chroma_matrix)
+        assert np.all(eigenvalues >= 0.5 - 1e-9) and np.all(eigenvalues <= 2.0 + 1e-9)
+
+    def test_moves_mean_towards_reference(
+        self, source_image: np.ndarray, reference_image: np.ndarray
+    ) -> None:
+        from stealzalut.core.colorspace import srgb_to_oklab
+
+        model = fit_transfer(source_image, reference_image, method="oklab")
+        out = model.apply(source_image.reshape(-1, 3) / 255.0)
+        mean_out = srgb_to_oklab(out).mean(axis=0)
+        mean_ref = srgb_to_oklab(reference_image.reshape(-1, 3) / 255.0).mean(axis=0)
+        mean_src = srgb_to_oklab(source_image.reshape(-1, 3) / 255.0).mean(axis=0)
+        assert np.linalg.norm(mean_out - mean_ref) < 0.25 * np.linalg.norm(mean_src - mean_ref)
+
+    def test_transfer_image_supports_oklab(
+        self, source_image: np.ndarray, reference_image: np.ndarray
+    ) -> None:
+        out = ColorTransferEngine(method="oklab").transfer_image(source_image, reference_image)
+        assert out.shape == source_image.shape and out.dtype == np.uint8

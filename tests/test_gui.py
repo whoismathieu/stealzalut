@@ -9,6 +9,7 @@ from typing import Any, cast
 import cv2
 import numpy as np
 import pytest
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QApplication
 
 from stealzalut.config import Settings
@@ -146,6 +147,45 @@ class TestImageDropZone:
         assert zone.image_path is None
         assert len(cleared_events) == 1
 
+    def test_path_hidden_when_empty(self, qapp: QApplication) -> None:
+        zone = ImageDropZone()
+        assert zone.path_text == ""
+        assert zone._path_row.isHidden()
+
+    def test_path_shown_after_load(self, qapp: QApplication, sample_image_path: Path) -> None:
+        zone = ImageDropZone()
+        zone.load_from_path(sample_image_path)
+
+        assert zone.path_text == str(sample_image_path.absolute())
+        assert not zone._path_row.isHidden()
+        assert zone._path_field.isReadOnly()
+
+    def test_path_hidden_after_clear(self, qapp: QApplication, sample_image_path: Path) -> None:
+        zone = ImageDropZone()
+        zone.load_from_path(sample_image_path)
+        zone.clear_image()
+
+        assert zone.path_text == ""
+        assert zone._path_row.isHidden()
+
+    def test_failed_load_keeps_previous_path(
+        self, qapp: QApplication, sample_image_path: Path, tmp_path: Path
+    ) -> None:
+        zone = ImageDropZone()
+        zone.load_from_path(sample_image_path)
+        zone.load_from_path(tmp_path / "missing.png")
+
+        assert zone.path_text == str(sample_image_path.absolute())
+
+    def test_copy_button_copies_path(self, qapp: QApplication, sample_image_path: Path) -> None:
+        zone = ImageDropZone()
+        zone.load_from_path(sample_image_path)
+
+        zone._copy_btn.click()
+
+        assert QGuiApplication.clipboard().text() == str(sample_image_path.absolute())
+        assert zone._copy_btn.text() == "Copié ✓"
+
 
 # ── PreviewPanel tests ───────────────────────────────────────────────────────
 
@@ -192,9 +232,10 @@ class TestMainWindow:
         assert sizes == [17, 33, 64]
         assert window._size_combo.currentData() == 33
 
-        # Algorithm combo box populated with all 7 methods and default selected
-        assert window._algo_combo.count() == 7
+        # Algorithm combo box populated with all 8 methods and default selected
+        assert window._algo_combo.count() == 8
         algos = [window._algo_combo.itemData(i) for i in range(window._algo_combo.count())]
+        assert "oklab" in algos
         assert "mkl" in algos
         assert "reinhard" in algos
         assert "hm" in algos
@@ -315,5 +356,110 @@ class TestMainWindow:
 
                 assert window._stale_transfer_workers == []
                 set_image.assert_called_once()  # the stale result was ignored
+        finally:
+            window.stop_workers()
+
+
+
+# ── AdjustmentsPanel tests ───────────────────────────────────────────────────
+
+
+class TestAdjustmentsPanel:
+    def test_defaults_are_passthrough(self, qapp: QApplication) -> None:
+        from stealzalut.gui.widgets.adjustments_panel import AdjustmentsPanel
+
+        assert AdjustmentsPanel().params().is_passthrough
+
+    def test_set_params_roundtrip_and_reset(self, qapp: QApplication) -> None:
+        from stealzalut.core.grading import GradingParams
+        from stealzalut.gui.widgets.adjustments_panel import AdjustmentsPanel
+
+        panel = AdjustmentsPanel()
+        wanted = GradingParams(
+            luminance_strength=0.4,
+            chroma_strength=0.9,
+            preserve_neutrals=0.5,
+            skin_protection=0.75,
+            mix=0.8,
+            smoothing=1.25,
+        )
+        panel.set_params(wanted)
+        assert panel.params() == wanted
+        panel.reset()
+        assert panel.params().is_passthrough
+
+    def test_change_is_debounced(self, qapp: QApplication) -> None:
+        import time
+
+        from stealzalut.gui.widgets.adjustments_panel import DEBOUNCE_MS, AdjustmentsPanel
+
+        panel = AdjustmentsPanel()
+        emitted: list[Any] = []
+        panel.params_changed.connect(emitted.append)
+        slider = panel._sliders["mix"]
+        for value in (90, 80, 70):
+            slider.setValue(value)
+        assert emitted == []  # nothing before the debounce delay
+
+        deadline = time.monotonic() + DEBOUNCE_MS / 1000 + 2
+        while not emitted and time.monotonic() < deadline:
+            qapp.processEvents()
+            time.sleep(0.01)
+        assert len(emitted) == 1
+        assert emitted[0].mix == pytest.approx(0.7)
+
+
+class TestModelCache:
+    def test_second_preview_reuses_fitted_model(
+        self,
+        qapp: QApplication,
+        default_settings: Settings,
+        sample_image_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Moving a slider must not re-read the images (no refit)."""
+        import time
+        from unittest.mock import patch
+
+        from stealzalut.core.color_transfer import ColorTransferEngine
+
+        window = MainWindow(settings=default_settings)
+        try:
+            with patch.object(window, "_run_transfer_preview"):
+                window._source_zone.load_from_path(sample_image_path)
+                window._reference_zone.load_from_path(sample_image_path)
+
+            calls: list[str] = []
+            original_fit = ColorTransferEngine.fit
+
+            def counting_fit(self: Any, *args: Any, **kwargs: Any) -> Any:
+                calls.append("fit")
+                return original_fit(self, *args, **kwargs)
+
+            monkeypatch.setattr(ColorTransferEngine, "fit", counting_fit)
+
+            def run_and_wait() -> None:
+                window._run_transfer_preview()
+                worker = window._transfer_worker
+                deadline = time.monotonic() + 15
+                while worker is not None and time.monotonic() < deadline and (
+                    worker.isRunning() or not worker.isFinished()
+                ):
+                    qapp.processEvents()
+                    time.sleep(0.01)
+                for _ in range(20):
+                    qapp.processEvents()
+
+            run_and_wait()
+            assert calls == ["fit"]
+            assert window._model_cache is not None
+
+            window._adjustments._sliders["mix"].setValue(50)
+            run_and_wait()
+            assert calls == ["fit"]  # reused, not refitted
+
+            window._model_cache = None  # e.g. a new image was dropped
+            run_and_wait()
+            assert calls == ["fit", "fit"]
         finally:
             window.stop_workers()

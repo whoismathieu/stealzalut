@@ -1,9 +1,11 @@
 """QThread worker for 3D LUT generation and .cube export.
 
 Runs the full LUT pipeline in a background thread:
-  1. Fit the transfer model on source/reference (image statistics, once).
+  1. Fit the transfer model on source/reference (image statistics, once),
+     unless the preview's fitted model is passed in.
   2. Generate a neutral 3D grid at the requested resolution.
-  3. Apply the fitted model to every grid point (chunked for progress).
+  3. Apply the model and the user's adjustments (strengths, protections,
+     mix, smoothing) — the same code path as the preview.
   4. Write the resulting grid to a ``.cube`` file on disk.
 
 Progress is reported granularly across all four phases via the
@@ -21,8 +23,8 @@ import numpy as np
 from numpy.typing import NDArray
 from PySide6.QtCore import QThread, Signal
 
-from stealzalut.core.color_transfer import ColorTransferEngine
-from stealzalut.core.lut_engine import generate_neutral_grid
+from stealzalut.core.color_transfer import ColorTransferEngine, TransferModel
+from stealzalut.core.grading import GradingParams, build_grid
 from stealzalut.core.lut_export import write_cube_file
 
 logger = logging.getLogger(__name__)
@@ -70,9 +72,13 @@ class ExportWorker(QThread):
         title: str = "StealZaLut",
         group: str = "StealZaLut",
         method: str = "mkl",
+        params: GradingParams | None = None,
+        model: TransferModel | None = None,
         parent: Any = None,
     ) -> None:
         super().__init__(parent)
+        self._params = params or GradingParams()
+        self._model = model  # reuse the preview's fitted model when available
         self._source = source_rgb
         self._reference = reference_rgb
         self._lut_size = lut_size
@@ -96,34 +102,25 @@ class ExportWorker(QThread):
 
             # ── Phase 1: Prepare color transfer parameters (0–20 %) ──────
             self.progress.emit(0)
-            logger.debug("Phase 1/4: Analyzing color distributions for %s…", self._method)
-            model = self._engine.fit(self._source, self._reference, method=self._method)
+            model = self._model
+            if model is None:
+                logger.debug("Phase 1/4: Analyzing color distributions for %s…", self._method)
+                model = self._engine.fit(self._source, self._reference, method=self._method)
             self.progress.emit(20)
 
-            # ── Phase 2: Generate neutral grid (20–30 %) ─────────────────
-            logger.debug("Phase 2/4: Generating neutral grid (%d³)…", self._lut_size)
-
-            grid = generate_neutral_grid(self._lut_size)
-            self.progress.emit(30)
-
-            # ── Phase 3: Bake the transform onto the grid (30–60 %) ──────
+            # ── Phases 2–3: Bake transfer + adjustments onto the grid (20–60 %)
             logger.debug(
-                "Phase 3/4: Baking %s transform onto %d grid points…",
+                "Phases 2-3/4: Baking %s transform and adjustments onto %d grid points…",
                 self._method,
                 total_points,
             )
-
-            # Process in chunks to allow progress reporting on large grids
-            chunk_size = max(1, total_points // 30)  # ~30 progress updates
-            baked_grid = np.empty_like(grid)
-
-            for start in range(0, total_points, chunk_size):
-                end = min(start + chunk_size, total_points)
-                baked_grid[start:end] = model.apply(grid[start:end])
-                # Map [0, total_points] → [30, 60]
-                phase_pct = int((end / total_points) * 30)
-                self.progress.emit(30 + phase_pct)
-
+            self.progress.emit(30)
+            grid_result = build_grid(model, self._lut_size, self._params)
+            baked_grid = grid_result.grid
+            if grid_result.auto_smoothed:
+                logger.info(
+                    "Grid auto-smoothed to %.2f to remove folds", grid_result.smoothing_used
+                )
             self.progress.emit(60)
 
             # ── Phase 4: Write output .cube file (60–100 %) ──────────────

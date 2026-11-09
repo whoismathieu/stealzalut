@@ -1,7 +1,9 @@
 """Drag-and-drop image widget.
 
 Displays a placeholder label when empty, or a scaled thumbnail when
-an image has been loaded (via drag-and-drop or file dialog).
+an image has been loaded (via drag-and-drop or file dialog).  The path of
+the loaded file is shown at the bottom-left of the zone, selectable and
+copyable (Ctrl+C or the copy button).
 """
 
 from __future__ import annotations
@@ -13,9 +15,25 @@ from typing import Any
 import cv2
 import numpy as np
 from numpy.typing import NDArray
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QDragEnterEvent, QDropEvent, QImage, QMouseEvent, QPixmap
-from PySide6.QtWidgets import QFileDialog, QLabel, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import (
+    QDragEnterEvent,
+    QDropEvent,
+    QGuiApplication,
+    QImage,
+    QMouseEvent,
+    QPixmap,
+)
+from PySide6.QtWidgets import (
+    QFileDialog,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QSizePolicy,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from stealzalut.utils.image_io import (
     SUPPORTED_EXTENSIONS,
@@ -25,6 +43,10 @@ from stealzalut.utils.image_io import (
 )
 
 logger = logging.getLogger(__name__)
+
+_COPY_LABEL = "Copier"
+_COPIED_LABEL = "Copié ✓"
+_COPIED_FEEDBACK_MS = 1500
 
 _RAW_FILTER_EXTS = (
     "*.cr2 *.cr3 *.nef *.arw *.raf *.rw2 *.orf *.pef *.dng *.raw "
@@ -86,6 +108,37 @@ class ImageDropZone(QWidget):
         self._label.setObjectName("dropZoneLabel")
         layout.addWidget(self._label)
 
+        # Path row (bottom-left): read-only field + copy button, hidden when empty
+        self._path_row = QWidget()
+        path_layout = QHBoxLayout(self._path_row)
+        path_layout.setContentsMargins(0, 4, 0, 0)
+        path_layout.setSpacing(6)
+
+        self._path_field = QLineEdit()
+        self._path_field.setReadOnly(True)
+        self._path_field.setObjectName("pathField")
+        # No keyboard focus at startup (avoids a highlighted field on launch)
+        self._path_field.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+        self._path_field.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        path_layout.addWidget(self._path_field, stretch=1)
+
+        self._copy_btn = QToolButton()
+        self._copy_btn.setText(_COPY_LABEL)
+        self._copy_btn.setToolTip("Copier le chemin dans le presse-papiers")
+        self._copy_btn.setObjectName("copyPathButton")
+        self._copy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._copy_btn.clicked.connect(self.copy_path_to_clipboard)
+        path_layout.addWidget(self._copy_btn)
+
+        layout.addWidget(self._path_row)
+        self._path_row.hide()
+
+        # Restores the copy button label after the "copied" feedback
+        self._copy_feedback_timer = QTimer(self)
+        self._copy_feedback_timer.setSingleShot(True)
+        self._copy_feedback_timer.setInterval(_COPIED_FEEDBACK_MS)
+        self._copy_feedback_timer.timeout.connect(lambda: self._copy_btn.setText(_COPY_LABEL))
+
         self.setObjectName("imageDropZone")
 
     # ── Public API ───────────────────────────────────────────────────────
@@ -101,6 +154,11 @@ class ImageDropZone(QWidget):
         return self._image_path
 
     @property
+    def path_text(self) -> str:
+        """The displayed path of the loaded file (empty when no image)."""
+        return self._path_field.text()
+
+    @property
     def has_image(self) -> bool:
         """Whether an image is currently loaded."""
         return self._image_rgb is not None
@@ -111,7 +169,16 @@ class ImageDropZone(QWidget):
         self._image_path = None
         self._label.setPixmap(QPixmap())
         self._label.setText(self._label_text)
+        self._set_path_display(None)
         self.image_cleared.emit()
+
+    def copy_path_to_clipboard(self) -> None:
+        """Copy the loaded file's path to the system clipboard."""
+        if not self.path_text:
+            return
+        QGuiApplication.clipboard().setText(self.path_text)
+        self._copy_btn.setText(_COPIED_LABEL)
+        self._copy_feedback_timer.start()
 
     def load_from_path(self, path: str | Path) -> bool:
         """Load an image from *path*.
@@ -126,6 +193,7 @@ class ImageDropZone(QWidget):
             self._image_rgb = rgb
             self._image_path = path
             self._update_thumbnail(bgr)
+            self._set_path_display(path)
             self.image_loaded.emit(rgb)
             logger.info("Loaded image: %s (%s)", path.name, rgb.shape)
             return True
@@ -173,6 +241,21 @@ class ImageDropZone(QWidget):
             self.load_from_path(path)
 
     # ── Internal ─────────────────────────────────────────────────────────
+
+    def _set_path_display(self, path: Path | None) -> None:
+        """Show *path* in the path row, or hide the row when ``None``."""
+        if path is None:
+            self._path_field.clear()
+            self._path_field.setToolTip("")
+            self._path_row.hide()
+            return
+        text = str(path.absolute())
+        self._path_field.setText(text)
+        self._path_field.setToolTip(text)
+        # Long paths: scroll so the file name (end of the path) stays visible
+        self._path_field.setCursorPosition(len(text))
+        self._copy_btn.setText(_COPY_LABEL)
+        self._path_row.show()
 
     def _update_thumbnail(self, bgr_image: NDArray[np.uint8]) -> None:
         """Generate and display a thumbnail from the BGR image."""

@@ -32,8 +32,10 @@ from PySide6.QtWidgets import (
 )
 
 from stealzalut.config import Settings
-from stealzalut.core.color_transfer import METHOD_LABELS
+from stealzalut.core.color_transfer import METHOD_LABELS, TransferModel
+from stealzalut.core.grading import GridResult
 from stealzalut.core.lut_engine import VALID_LUT_SIZES
+from stealzalut.gui.widgets.adjustments_panel import AdjustmentsPanel
 from stealzalut.gui.widgets.image_drop_zone import ImageDropZone
 from stealzalut.gui.widgets.preview_panel import PreviewPanel
 from stealzalut.workers.export_worker import ExportWorker
@@ -64,10 +66,16 @@ class MainWindow(QMainWindow):
         self._export_worker: ExportWorker | None = None
         # Superseded preview workers still running; kept alive until they end.
         self._stale_transfer_workers: list[TransferWorker] = []
+        # Fitted model reused while images and method are unchanged:
+        # (source, reference, method, model).  Moving a slider or changing the
+        # LUT size then only rebuilds the grid instead of re-reading the images.
+        self._model_cache: tuple[Any, Any, str, TransferModel] | None = None
+        self._pending_model_key: tuple[Any, Any, str] | None = None
+        self._last_grid_result: GridResult | None = None
 
         self.setWindowTitle("StealZaLut — Colour LUT Generator")
-        self.setMinimumSize(900, 550)
-        self.resize(1100, 650)
+        self.setMinimumSize(900, 680)
+        self.resize(1100, 780)
 
         self._build_ui()
         self._connect_signals()
@@ -117,6 +125,13 @@ class MainWindow(QMainWindow):
         # Equal widths
         splitter.setSizes([350, 350, 350])
         root_layout.addWidget(splitter, stretch=1)
+
+        # ── Adjustments (sliders on top of the transfer) ─────────────
+        adjust_group = QGroupBox("Ajustements")
+        adjust_layout = QVBoxLayout(adjust_group)
+        self._adjustments = AdjustmentsPanel()
+        adjust_layout.addWidget(self._adjustments)
+        root_layout.addWidget(adjust_group)
 
         # ── Middle: Controls (Algorithm + LUT size + Export button) ─
         controls_layout = QHBoxLayout()
@@ -201,6 +216,9 @@ class MainWindow(QMainWindow):
         self._algo_combo.currentIndexChanged.connect(self._on_algo_changed)
         self._size_combo.currentIndexChanged.connect(self._on_algo_changed)
 
+        # Slider moved (debounced by the panel) → rebuild the grid
+        self._adjustments.params_changed.connect(self._on_params_changed)
+
     # ── Slots ────────────────────────────────────────────────────────────
 
     def _on_algo_changed(self, _index: int) -> None:
@@ -208,8 +226,14 @@ class MainWindow(QMainWindow):
         if self._source_zone.has_image and self._reference_zone.has_image:
             self._run_transfer_preview()
 
+    def _on_params_changed(self, _params: Any) -> None:
+        """Called (debounced) when an adjustment slider moves."""
+        if self._source_zone.has_image and self._reference_zone.has_image:
+            self._run_transfer_preview()
+
     def _on_image_changed(self, _image: Any) -> None:
         """Called when either source or reference image is loaded."""
+        self._model_cache = None
         self._update_export_button_state()
 
         if self._source_zone.has_image and self._reference_zone.has_image:
@@ -217,6 +241,7 @@ class MainWindow(QMainWindow):
 
     def _on_image_cleared(self) -> None:
         """Called when an image is removed."""
+        self._model_cache = None
         self._update_export_button_state()
         self._preview.clear()
         self._progress_bar.setValue(0)
@@ -273,10 +298,20 @@ class MainWindow(QMainWindow):
         self._status_bar.showMessage(f"Computing colour transfer preview ({method})…")
         self._progress_bar.setValue(0)
 
+        model = self._cached_model(source, reference, method)
+        self._pending_model_key = (source, reference, method)
+
         self._transfer_worker = TransferWorker(
-            source, reference, method=method, lut_size=lut_size
+            source,
+            reference,
+            method=method,
+            lut_size=lut_size,
+            params=self._adjustments.params(),
+            model=model,
         )
         self._transfer_worker.progress.connect(self._on_transfer_progress)
+        self._transfer_worker.model_ready.connect(self._on_model_ready)
+        self._transfer_worker.grid_ready.connect(self._on_grid_ready)
         self._transfer_worker.result_ready.connect(self._on_transfer_result)
         self._transfer_worker.error.connect(self._on_worker_error)
         self._transfer_worker.start()
@@ -296,6 +331,8 @@ class MainWindow(QMainWindow):
             return
 
         old.progress.disconnect(self._on_transfer_progress)
+        old.model_ready.disconnect(self._on_model_ready)
+        old.grid_ready.disconnect(self._on_grid_ready)
         old.result_ready.disconnect(self._on_transfer_result)
         old.error.disconnect(self._on_worker_error)
 
@@ -309,13 +346,38 @@ class MainWindow(QMainWindow):
         if worker in self._stale_transfer_workers:
             self._stale_transfer_workers.remove(worker)
 
+    def _cached_model(self, source: Any, reference: Any, method: str) -> TransferModel | None:
+        """The fitted model for these exact images and method, if cached."""
+        cache = self._model_cache
+        if cache is None:
+            return None
+        c_source, c_reference, c_method, model = cache
+        if c_source is source and c_reference is reference and c_method == method:
+            return model
+        return None
+
+    def _on_model_ready(self, model: TransferModel) -> None:
+        """Cache the model fitted by the current preview worker."""
+        if self._pending_model_key is not None:
+            self._model_cache = (*self._pending_model_key, model)
+
+    def _on_grid_ready(self, result: GridResult) -> None:
+        self._last_grid_result = result
+
     def _on_transfer_progress(self, pct: int) -> None:
         self._progress_bar.setValue(pct)
 
     def _on_transfer_result(self, result: NDArray[np.uint8]) -> None:
         self._preview.set_image(result)
         self._progress_bar.setValue(100)
-        self._status_bar.showMessage("Preview ready — click 'Export .cube' to save.")
+        grid_result = self._last_grid_result
+        if grid_result is not None and grid_result.auto_smoothed:
+            self._status_bar.showMessage(
+                f"Preview ready — lissage relevé automatiquement à "
+                f"{grid_result.smoothing_used:.2f} pour éviter des inversions de luminosité."
+            )
+        else:
+            self._status_bar.showMessage("Preview ready — click 'Export .cube' to save.")
         logger.info("Transfer preview displayed")
 
     # ── Export ────────────────────────────────────────────────────────────
@@ -345,6 +407,8 @@ class MainWindow(QMainWindow):
             output_path=output_path,
             title=title,
             method=method,
+            params=self._adjustments.params(),
+            model=self._cached_model(source, reference, method),
         )
         self._export_worker.progress.connect(self._on_export_progress)
         self._export_worker.result_ready.connect(self._on_export_result)

@@ -85,12 +85,19 @@ class TestAdjustDisplacement:
 
 
 class TestBuildGrid:
-    @pytest.mark.parametrize("method", SUPPORTED_METHODS)
+    @pytest.mark.parametrize("method", [m for m in SUPPORTED_METHODS if m != "zones"])
     def test_passthrough_equals_raw_bake(self, method: str) -> None:
         """Default adjustments keep the exported .cube identical to the raw transfer."""
         m = fit_transfer(_image((180, 100, 80), 40, 1), _image((70, 120, 200), 35, 2), method)
         result = build_grid(m, 17)
         np.testing.assert_array_equal(result.grid, m.bake(17))
+        assert not result.auto_smoothed
+
+    def test_zones_default_matches_raw_bake(self) -> None:
+        """Zones always go through the fold check, but the result is unchanged."""
+        m = fit_transfer(_image((180, 100, 80), 40, 1), _image((70, 120, 200), 35, 2), "zones")
+        result = build_grid(m, 17)
+        np.testing.assert_allclose(result.grid, m.bake(17), atol=1e-5)
         assert not result.auto_smoothed
 
     @pytest.mark.parametrize(
@@ -165,3 +172,6 @@ class _Scale:
 
     def bake(self, size: int) -> np.ndarray:
         return self.apply(generate_neutral_grid(size))
+
+    def fold_reference(self) -> _Scale:
+        return self

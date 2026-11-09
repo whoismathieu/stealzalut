@@ -148,7 +148,9 @@ def build_grid(
 ) -> GridResult:
     """Bake *model* onto a *size*³ grid with the user's adjustments.
 
-    With default :class:`GradingParams` the grid is exactly ``model.bake(size)``.
+    With default :class:`GradingParams` the grid is exactly ``model.bake(size)``
+    for plain transfers.  Blended transfers (zones) always go through the
+    fold check, using their :meth:`~TransferModel.fold_reference` as baseline.
 
     Args:
         model: Fitted transfer model.
@@ -162,10 +164,14 @@ def build_grid(
     base = generate_neutral_grid(size)
     raw = model.apply(base)
     lab_raw = srgb_to_oklab(raw)
-    raw_folds = fold_fraction(lab_raw[:, 0], size)
 
-    if params.is_passthrough:
-        return GridResult(raw, raw_folds, 0.0, auto_smoothed=False)
+    baseline = model.fold_reference()
+    if baseline is model:
+        raw_folds = fold_fraction(lab_raw[:, 0], size)
+        if params.is_passthrough:
+            return GridResult(raw, raw_folds, 0.0, auto_smoothed=False)
+    else:
+        raw_folds = fold_fraction(srgb_to_oklab(baseline.apply(base))[:, 0], size)
 
     lab_in = srgb_to_oklab(base)
     delta = adjust_displacement(lab_in, lab_raw, params)

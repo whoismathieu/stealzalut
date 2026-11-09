@@ -54,6 +54,7 @@ class AffineTransform:
 # ── Method definitions ───────────────────────────────────────────────────────
 
 SUPPORTED_METHODS: tuple[str, ...] = (
+    "zones",
     "oklab",
     "mkl",
     "reinhard",
@@ -65,6 +66,7 @@ SUPPORTED_METHODS: tuple[str, ...] = (
 )
 
 METHOD_LABELS: dict[str, str] = {
+    "zones": "Zones (correspondances par zone de couleur)",
     "oklab": "Oklab (luminance / couleur séparées)",
     "mkl": "Monge–Kantorovitch (MKL)",
     "reinhard": "Reinhard (Lab Stats)",
@@ -77,7 +79,7 @@ METHOD_LABELS: dict[str, str] = {
 
 
 #: Methods implemented by the ``color-matcher`` library (image-level transfer).
-COLOR_MATCHER_METHODS: frozenset[str] = frozenset(SUPPORTED_METHODS) - {"oklab"}
+COLOR_MATCHER_METHODS: frozenset[str] = frozenset(SUPPORTED_METHODS) - {"oklab", "zones"}
 
 #: Bounds on the per-axis scaling of the Oklab transfer.  Without them a
 #: nearly uniform image (tiny variance) makes the transform explode.
@@ -354,6 +356,16 @@ class TransferModel(ABC):
     def apply(self, colors: NDArray[np.float64]) -> NDArray[np.float64]:
         """Map colours ``(N, 3)`` in [0, 1] to transferred colours, clamped."""
 
+    def fold_reference(self) -> TransferModel:
+        """Model whose own folds are accepted as-is when regularising a grid.
+
+        Folds present in this reference are not "fixed" by smoothing (they
+        belong to the transfer itself); only folds added on top of it are.
+        A plain transfer is its own reference; a blended one (zones) points
+        to its global transfer.
+        """
+        return self
+
     def bake(self, size: int) -> NDArray[np.float64]:
         """Bake the model onto a neutral grid of *size*³ points."""
         return self.apply(generate_neutral_grid(size))
@@ -594,6 +606,11 @@ def fit_transfer(
     chosen = method.lower()
     if chosen == "oklab":
         return _fit_oklab(source, reference)
+
+    if chosen == "zones":
+        from stealzalut.core.zone_transfer import fit_zone_transfer  # avoids an import cycle
+
+        return fit_zone_transfer(source, reference)
 
     if chosen in ("mkl", "mvgd", "default"):
         return AffineTransferModel(_fit_affine_transform(source, reference), method_name=chosen)

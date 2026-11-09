@@ -250,7 +250,7 @@ $$C_{ij} = w_L\,(\ell_i - \ell_j)^2 + w_C\,\frac{\lVert ab_i - ab_j\rVert^2}{s_{
 
 - `ℓ` = `l_rank` (les ombres vont vers les ombres, les hautes lumières vers les hautes lumières) ;
 - `ab` = chroma moyenne, `s_ab` = écart-type des chromas des zones des deux images ;
-- `S_ij` = distance sémantique (phase 5, 0 sinon). Défauts : `w_L = 1.0`, `w_C = 0.5`.
+- `S_ij` = distance sémantique (phase 5, 0 sinon). Défauts : `w_L = 2.0`, `w_C = 0.5` (avec `w_L = 1.0`, un ciel clair était apparié à une mer sombre uniquement parce que les deux sont bleus).
 
 Résolution par **transport optimal entropique (Sinkhorn)**, avec les surfaces comme marges. On obtient un plan doux (une zone source peut viser plusieurs zones référence), sans dépendance supplémentaire :
 
@@ -310,9 +310,11 @@ $$\mu^* = \sum_j w_j\,\mu_j,\qquad \Sigma^* = \sum_j w_j\left(\Sigma_j + (\mu_j-
 
 Déplacement du point `c` dû à la zone `k` :
 
-$$\Delta_k(c) = s_k \cdot \big[\,\alpha_L\,(L'-L),\ \alpha_C\,(ab'-ab)\,\big] + \delta_{intent,k}$$
+$$\Delta_k(c) = s_k \cdot \big[\,(1-\lambda_k)\,\Delta L_{global}(c) + \lambda_k\,(L'-L),\ \alpha_C\,(ab'-ab)\,\big] + \delta_{intent,k}$$
 
-avec `s_k` = `strength` (0 si `locked`), `α_L`, `α_C` = forces luminance/chroma (du lien, sinon globales).
+avec `s_k` = `strength` (0 si `locked`), `α_C` = force chroma du lien (défaut 1), et `λ_k` = `luminance_strength` du lien, **0 par défaut**.
+
+> **Décision prise en phase 2a** : par défaut, les zones choisissent les **couleurs** et la luminosité suit le **transfert global** (monotone). Avec `λ = 1` comme prévu au départ, l'appariement envoyait un ciel clair vers une mer sombre pendant que ses voisines allaient vers des tons clairs : 5 % de la grille repliée, non rattrapable par le lissage. Une zone peut toujours prendre la luminosité de sa cible (`λ > 0`), en acceptant ce risque. Les forces luminance/chroma globales de la phase 1 s'appliquent ensuite par-dessus.
 
 **c) Intentions → décalages déterministes** (c'est l'application qui chiffre, jamais l'IA) :
 
@@ -388,7 +390,7 @@ def smooth_field(delta: F64, size: int, sigma_cells: float) -> F64:
 
 ### 4.7. Détection des conflits (limite de la LUT)
 
-Pour chaque paire de zones source `(i, j)`, calculer leur **recouvrement** dans l'espace couleur (coefficient de Bhattacharyya entre les deux gaussiennes). Si le recouvrement est élevé (> 0.5) **et** que leurs déplacements moyens diffèrent fortement (> 0.05 en Oklab), afficher :
+Pour chaque paire de zones source `(i, j)`, calculer leur **recouvrement** dans l'espace couleur (coefficient de Bhattacharyya entre les deux gaussiennes). Si le recouvrement est élevé (> 0.3 : une même masse de couleur coupée en deux par k-means se recouvre à ~0.45, des zones vraiment distinctes à ~0) **et** que leurs déplacements moyens diffèrent fortement (> 0.05 en Oklab), afficher :
 
 > « Les zones S2 et S5 ont des couleurs trop proches pour être traitées différemment : la LUT va les mélanger. »
 

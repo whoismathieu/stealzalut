@@ -186,7 +186,7 @@ class TestColorTransferEngine:
 
     def test_supported_methods_constants(self) -> None:
         """SUPPORTED_METHODS and METHOD_LABELS have matching keys."""
-        assert len(SUPPORTED_METHODS) == 8
+        assert len(SUPPORTED_METHODS) == 9
         for m in SUPPORTED_METHODS:
             assert m in METHOD_LABELS
 

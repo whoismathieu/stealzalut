@@ -3,6 +3,7 @@ zone highlight, editor widgets and their wiring in the main window."""
 
 from __future__ import annotations
 
+import json
 import sys
 import time
 from collections.abc import Callable
@@ -424,19 +425,22 @@ def _wait(qapp: QApplication, condition: Callable[[], bool], timeout: float = 20
     assert condition()
 
 
+def _zones_settings() -> Settings:
+    return Settings(
+        lut_output_dir=Path.home() / "Documents" / "LUTs",
+        lut_default_size=17,
+        color_transfer_method="zones",
+        app_theme="dark",
+        log_level="WARNING",
+        log_file=None,
+    )
+
+
 class TestMainWindowZones:
     def _window(self, qapp: QApplication, image_paths: tuple[Path, Path]) -> Any:
         from stealzalut.gui.main_window import MainWindow
 
-        settings = Settings(
-            lut_output_dir=Path.home() / "Documents" / "LUTs",
-            lut_default_size=17,
-            color_transfer_method="zones",
-            app_theme="dark",
-            log_level="WARNING",
-            log_file=None,
-        )
-        window = MainWindow(settings=settings)
+        window = MainWindow(settings=_zones_settings())
         window._zone_count_spin.setValue(3)
         window._source_zone.load_from_path(image_paths[0])
         window._reference_zone.load_from_path(image_paths[1])
@@ -530,3 +534,161 @@ class TestMainWindowZones:
             assert window._history.current.table is None
         finally:
             window.stop_workers()
+
+
+# ── Phase 3: recipes and AI pack in the window ───────────────────────────────
+
+
+def _answer(analysis: str, target: int) -> str:
+    recipe = {
+        "format": "stealzalut.recipe",
+        "version": 2,
+        "analysis_id": analysis,
+        "name": "Essai",
+        "global": {"mix": 0.8},
+        "links": [{"source_zone": 1, "targets": {str(target): 1}, "rationale": "Feuillage"}],
+    }
+    return "Analyse : S1 est le feuillage.\n```json\n" + json.dumps(recipe) + "\n```"
+
+
+class TestRecipesInWindow:
+    _window = TestMainWindowZones._window
+
+    def test_buttons_need_zones(self, qapp: QApplication) -> None:
+        from stealzalut.gui.main_window import MainWindow
+
+        window = MainWindow(settings=_zones_settings())
+        assert not window._ai_pack_btn.isEnabled()
+        assert not window._import_btn.isEnabled()
+        assert not window._export_recipe_btn.isEnabled()
+
+    def test_apply_ai_answer_is_one_undo_step(
+        self, qapp: QApplication, image_paths: tuple[Path, Path]
+    ) -> None:
+        from stealzalut.core.recipe import parse_recipe
+
+        window = self._window(qapp, image_paths)
+        try:
+            assert window._ai_pack_btn.isEnabled()
+            auto = window._history.current.table
+            target = next(r for r in (1, 2, 3) if r not in auto.link(1).targets)
+            answer = _answer(window._zone_model.analysis_id, target)
+            assert window.apply_recipe(parse_recipe(answer))
+
+            link = window._history.current.table.link(1)
+            assert link.targets == {target: 1.0}
+            assert link.origin == "ai" and link.rationale == "Feuillage"
+            assert window._adjustments.params().mix == pytest.approx(0.8)
+            assert window._corr_view.table == window._history.current.table
+
+            window.undo()
+            assert window._history.current.table == auto
+            assert window._adjustments.params().mix == pytest.approx(1.0)
+        finally:
+            window.stop_workers()
+
+    def test_recipe_of_other_analysis_asks(
+        self,
+        qapp: QApplication,
+        image_paths: tuple[Path, Path],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from stealzalut.core.recipe import parse_recipe
+
+        window = self._window(qapp, image_paths)
+        try:
+            auto = window._history.current.table
+            target = next(r for r in (1, 2, 3) if r not in auto.link(1).targets)
+            recipe = parse_recipe(_answer("00000000", target))
+
+            monkeypatch.setattr(window, "_ask_other_analysis", lambda _r: "cancel")
+            assert not window.apply_recipe(recipe)
+            assert window._history.current.table == auto
+
+            monkeypatch.setattr(window, "_ask_other_analysis", lambda _r: "apply")
+            assert window.apply_recipe(recipe)
+            assert window._history.current.table.link(1).targets == {target: 1.0}
+        finally:
+            window.stop_workers()
+
+    def test_unknown_zone_is_reported(
+        self,
+        qapp: QApplication,
+        image_paths: tuple[Path, Path],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from stealzalut.core.recipe import parse_recipe
+
+        window = self._window(qapp, image_paths)
+        try:
+            errors: list[str] = []
+            monkeypatch.setattr(QMessageBox, "critical", lambda *a, **k: errors.append(a[2]))
+            assert not window.apply_recipe(parse_recipe(_answer(window._zone_model.analysis_id, 9)))
+            assert "R9 n'existe pas" in errors[0]
+        finally:
+            window.stop_workers()
+
+    def test_export_then_import_restores_work(
+        self,
+        qapp: QApplication,
+        image_paths: tuple[Path, Path],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from PySide6.QtWidgets import QFileDialog
+
+        window = self._window(qapp, image_paths)
+        try:
+            edited = set_locked(window._history.current.table, 2, True)
+            window._corr_view._emit_table(edited)
+            path = tmp_path / "mon look.szl"
+            monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(path), ""))
+            window._on_export_recipe()
+            assert path.exists()
+
+            window._on_all_auto()
+            assert not window._history.current.table.link(2).locked
+
+            monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a, **k: (str(path), ""))
+            window._on_open_recipe()
+            assert window._history.current.table == edited
+        finally:
+            window.stop_workers()
+
+    def test_prepare_pack(
+        self,
+        qapp: QApplication,
+        image_paths: tuple[Path, Path],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from PySide6.QtGui import QGuiApplication
+        from PySide6.QtWidgets import QFileDialog
+
+        window = self._window(qapp, image_paths)
+        try:
+            monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *a, **k: str(tmp_path))
+            monkeypatch.setattr(QMessageBox, "exec", lambda self: 0)
+            window._on_prepare_ai_pack()
+            folder = tmp_path / "src_x_ref_stealzalut_pack"
+            assert (folder / "PROMPT.md").exists() and (folder / "analysis.json").exists()
+            assert window._zone_model.analysis_id in QGuiApplication.clipboard().text()
+        finally:
+            window.stop_workers()
+
+
+class TestPasteDialog:
+    def test_error_keeps_dialog_open(self, qapp: QApplication) -> None:
+        from stealzalut.gui.widgets.paste_recipe_dialog import PasteRecipeDialog
+
+        dialog = PasteRecipeDialog()
+        dialog.set_text("Je ne sais pas.")
+        dialog._on_accept()
+        assert dialog.recipe is None
+        assert dialog.result() != dialog.DialogCode.Accepted
+        assert "Aucun bloc JSON" in dialog._error.text()
+
+        dialog.set_text('```json\n{"format": "stealzalut.recipe", "version": 2, "links": []}\n```')
+        dialog._on_accept()
+        assert dialog.recipe is not None
+        assert dialog.result() == dialog.DialogCode.Accepted

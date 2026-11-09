@@ -230,7 +230,10 @@ class CorrespondenceView(QWidget):
 
         # Column headers
         header_font = QFont(self.font())
-        header_font.setPointSizeF(header_font.pointSizeF() * 0.9)
+        if header_font.pointSizeF() > 0:
+            header_font.setPointSizeF(header_font.pointSizeF() * 0.9)
+        elif header_font.pixelSize() > 0:  # stylesheet sizes fonts in px
+            header_font.setPixelSize(max(9, round(header_font.pixelSize() * 0.9)))
         p.setFont(header_font)
         p.setPen(QColor(157, 165, 180))
         p.drawText(QRectF(MARGIN, MARGIN, SWATCH_W, HEADER_H - 4), Qt.AlignmentFlag.AlignLeft,

@@ -12,6 +12,7 @@ same image and zone count always give the same zones and ids.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from typing import cast
 
@@ -33,6 +34,8 @@ MAX_ZONE_COUNT = 16
 MIN_ZONE_AREA = 0.01
 #: Ridge added to every zone covariance (keeps it invertible).
 COV_REGULARIZATION = 1e-5
+#: Bump when the zone analysis changes: recipes of older analyses get flagged.
+ALGORITHM_VERSION = "zones-1"
 
 _KMEANS_ATTEMPTS = 3
 _KMEANS_CRITERIA = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 50, 1e-4)
@@ -197,6 +200,33 @@ def _to_hex(lab_mean: F64) -> str:
     rgb = oklab_to_srgb(gamut_compress(lab_mean[None, :]))[0]
     r, g, b = (round(float(c) * 255.0) for c in rgb)
     return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def upsample_mask(mask: NDArray[np.bool_], width: int, height: int) -> NDArray[np.bool_]:
+    """Resize a boolean zone mask with smooth (non-blocky) edges."""
+    soft = cv2.resize(mask.astype(np.float32), (width, height), interpolation=cv2.INTER_LINEAR)
+    return np.asarray(soft >= 0.5, dtype=np.bool_)
+
+
+def analysis_id(
+    source_rgb: NDArray[np.uint8],
+    reference_rgb: NDArray[np.uint8],
+    zone_count: int,
+) -> str:
+    """Fingerprint of an analysis (8 hex chars).
+
+    Same images + same zone count + same algorithm → same id, hence the same
+    zones (the analysis is deterministic).  Recipes carry it so that a
+    recipe written for other zones can be detected.
+    """
+    k = int(np.clip(zone_count, MIN_ZONE_COUNT, MAX_ZONE_COUNT))
+    digest = hashlib.sha256()
+    for image in (source_rgb, reference_rgb):
+        small = create_thumbnail(image, ANALYSIS_MAX_SIZE)
+        digest.update(str(small.shape).encode())
+        digest.update(np.ascontiguousarray(small).tobytes())
+    digest.update(f"{k}|{ALGORITHM_VERSION}".encode())
+    return digest.hexdigest()[:8]
 
 
 def zone_mask(palette: ZonePalette, zone_id: int, size: tuple[int, int]) -> NDArray[np.bool_]:

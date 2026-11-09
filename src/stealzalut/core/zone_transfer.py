@@ -39,7 +39,13 @@ from stealzalut.core.color_transfer import (
 from stealzalut.core.colorspace import gamut_compress, oklab_to_srgb, srgb_to_oklab
 from stealzalut.core.correspondence import CorrespondenceTable, Level, Link
 from stealzalut.core.matching import match_zones
-from stealzalut.core.palette import DEFAULT_ZONE_COUNT, Zone, ZonePalette, analyze_zones
+from stealzalut.core.palette import (
+    DEFAULT_ZONE_COUNT,
+    Zone,
+    ZonePalette,
+    analysis_id,
+    analyze_zones,
+)
 
 F64 = NDArray[np.float64]
 
@@ -100,6 +106,8 @@ class ZoneTransferModel(TransferModel):
     table: CorrespondenceTable
     global_model: OklabTransferModel
     params: ZoneBakeParams = ZoneBakeParams()
+    #: Fingerprint of the analysis (see :func:`~stealzalut.core.palette.analysis_id`).
+    analysis_id: str = ""
 
     @property
     def method(self) -> str:
@@ -308,6 +316,7 @@ def fit_zone_transfer(
         table=table,
         global_model=global_model,
         params=params or ZoneBakeParams(),
+        analysis_id=analysis_id(source, reference, zone_count),
     )
     return model.with_table(harmonize_conflicts(model))
 

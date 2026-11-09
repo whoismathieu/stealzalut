@@ -561,6 +561,13 @@ Mon logiciel a découpé chaque image en zones de couleur. Fichiers joints :
 ```
 ````
 
+> **Décisions prises en phase 3** :
+> - Le prompt est un modèle dans `core/ai_pack.py` et non un fichier `assets/prompts/PROMPT.md`. L'application le remplit pour chaque pack, avec l'`analysis_id` et la liste exacte des zones (`S1, S2…`, `R1, R2…`), et le copie dans le presse-papiers. Aucun fichier à embarquer dans l'installeur. Il nomme aussi les quatre intentions possibles (`lightness`, `saturation`, `warmth`, `tint`).
+> - `analysis.json` et les recettes portent `zone_count` (le K demandé). Pour une recette d'une autre analyse, l'application propose « Recalculer avec K zones » si ce K diffère, « Appliquer quand même » (les identifiants restent vérifiés) ou « Annuler ».
+> - Les recettes exportées par l'application portent `origin` sur chaque lien, pour qu'un aller-retour export → import redonne exactement la même table. Un lien sans `origin` (écrit par l'IA) est marqué `ai`.
+> - Une recette s'applique sur la table **automatique** : les zones qu'elle ne cite pas reviennent à l'auto. L'import compte pour une seule étape d'annulation.
+> - Images du pack : la carte des zones est lissée par un filtre médian et les contours minuscules sont ignorés. Sinon, les contours suivaient le bruit des pixels et devenaient illisibles.
+
 ### 5.5. Variante sans pack (« profil de look »)
 
 Le client peut aussi vouloir réutiliser une référence sans l'image. Bouton **« Sauver le look »** → `.szlook` = zones référence (moments Oklab, surfaces, hex) + vignette basse résolution. Charger un `.szlook` remplace l'image de référence dans le modèle. Utile pour se constituer une bibliothèque de looks. Priorité basse.

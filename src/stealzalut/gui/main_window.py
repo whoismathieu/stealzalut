@@ -15,16 +15,19 @@ from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtGui import QDesktopServices, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QApplication,
     QComboBox,
+    QDialog,
     QFileDialog,
     QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -38,11 +41,22 @@ from PySide6.QtWidgets import (
 )
 
 from stealzalut.config import Settings
+from stealzalut.core.ai_pack import build_prompt, write_pack
 from stealzalut.core.color_transfer import METHOD_LABELS, TransferModel
 from stealzalut.core.correspondence import CorrespondenceTable, Link
 from stealzalut.core.grading import GridResult
 from stealzalut.core.lut_engine import VALID_LUT_SIZES
 from stealzalut.core.palette import DEFAULT_ZONE_COUNT, MAX_ZONE_COUNT, MIN_ZONE_COUNT
+from stealzalut.core.recipe import (
+    RECIPE_SUFFIX,
+    Recipe,
+    RecipeError,
+    apply_global,
+    apply_recipe,
+    dump_recipe,
+    parse_recipe,
+    recipe_to_dict,
+)
 from stealzalut.core.zone_transfer import (
     Conflict,
     ZoneBakeParams,
@@ -53,6 +67,7 @@ from stealzalut.gui.history import EditState, History
 from stealzalut.gui.widgets.adjustments_panel import AdjustmentsPanel
 from stealzalut.gui.widgets.correspondence_view import SOURCE, CorrespondenceView
 from stealzalut.gui.widgets.image_drop_zone import ImageDropZone
+from stealzalut.gui.widgets.paste_recipe_dialog import PasteRecipeDialog
 from stealzalut.gui.widgets.preview_panel import PreviewPanel
 from stealzalut.gui.widgets.zone_inspector import ZoneInspector
 from stealzalut.workers.export_worker import ExportWorker
@@ -103,6 +118,10 @@ class MainWindow(QMainWindow):
         # Zones method: raw fitted model shown in the editor (auto table)
         self._zone_model: ZoneTransferModel | None = None
         self._zone_count = DEFAULT_ZONE_COUNT
+        # Recipe waiting for a re-analysis with its zone count
+        self._pending_recipe: Recipe | None = None
+        # Message kept in the status bar when the next preview arrives
+        self._status_note = ""
 
         self.setWindowTitle("StealZaLut — Colour LUT Generator")
         self.setMinimumSize(900, 680)
@@ -122,6 +141,7 @@ class MainWindow(QMainWindow):
         self._update_zone_panel_visibility()
         self._update_export_button_state()
         self._update_undo_buttons()
+        self._update_ai_buttons()
 
         logger.info("MainWindow initialized")
 
@@ -302,6 +322,40 @@ class MainWindow(QMainWindow):
         self._refresh_tau_label()
 
         toolbar.addStretch()
+
+        # Bridge with the user's own AI (no network: files and clipboard only)
+        self._ai_pack_btn = QPushButton("Préparer pour mon IA…")
+        self._ai_pack_btn.setObjectName("aiPackButton")
+        self._ai_pack_btn.setToolTip(
+            "Crée un dossier à donner à ton IA (Claude, ChatGPT, Gemini…) :\n"
+            "les zones en images, leurs mesures et le prompt à coller.\n"
+            "Son conseil revient ensuite par « Importer »."
+        )
+        toolbar.addWidget(self._ai_pack_btn)
+
+        self._import_btn = QPushButton("Importer ▾")
+        self._import_btn.setObjectName("importRecipeButton")
+        self._import_btn.setToolTip("Appliquer la réponse de ton IA ou une recette enregistrée")
+        # Popped up by hand: QPushButton.setMenu() makes Qt warn about a
+        # negative point size with the stylesheet (fonts are sized in px).
+        self._import_menu = QMenu(self)
+        self._paste_action = self._import_menu.addAction("Coller la réponse de l'IA…")
+        self._open_recipe_action = self._import_menu.addAction("Ouvrir une recette (.szl)…")
+        self._import_btn.clicked.connect(
+            lambda: self._import_menu.popup(
+                self._import_btn.mapToGlobal(self._import_btn.rect().bottomLeft())
+            )
+        )
+        toolbar.addWidget(self._import_btn)
+
+        self._export_recipe_btn = QPushButton("Exporter la recette…")
+        self._export_recipe_btn.setObjectName("exportRecipeButton")
+        self._export_recipe_btn.setToolTip(
+            "Enregistre tes correspondances et réglages dans un fichier .szl\n"
+            "(pour les reprendre plus tard ou les partager)."
+        )
+        toolbar.addWidget(self._export_recipe_btn)
+
         self._all_auto_btn = QPushButton("Tout remettre en auto")
         self._all_auto_btn.setObjectName("allAutoButton")
         self._all_auto_btn.setToolTip("Revenir à l'appariement automatique pour toutes les zones")
@@ -368,6 +422,10 @@ class MainWindow(QMainWindow):
         self._zone_count_spin.valueChanged.connect(self._on_zone_count_changed)
         self._tau_slider.valueChanged.connect(self._on_tau_changed)
         self._all_auto_btn.clicked.connect(self._on_all_auto)
+        self._ai_pack_btn.clicked.connect(self._on_prepare_ai_pack)
+        self._paste_action.triggered.connect(self._on_paste_recipe)
+        self._open_recipe_action.triggered.connect(self._on_open_recipe)
+        self._export_recipe_btn.clicked.connect(self._on_export_recipe)
 
         # Undo / redo
         self._undo_btn.clicked.connect(self.undo)
@@ -469,6 +527,187 @@ class MainWindow(QMainWindow):
         table = self._history.current.table
         if table is not None:
             self._on_table_edited(table.with_link(link), merge_key)
+
+    # ── Bridge with the user's AI and recipe files ───────────────────────
+
+    def _on_prepare_ai_pack(self) -> None:
+        """Write the analysis pack and copy the prompt to the clipboard."""
+        model = self._zone_model
+        source, reference = self._source_zone.image_rgb, self._reference_zone.image_rgb
+        if model is None or source is None or reference is None:
+            return
+        destination = QFileDialog.getExistingDirectory(
+            self, "Dossier où créer le pack pour ton IA", str(self._settings.lut_output_dir)
+        )
+        if not destination:
+            return
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            folder = write_pack(
+                Path(destination), self._base_name(), source, reference, model, self._zone_count
+            )
+        except OSError as exc:
+            QMessageBox.critical(self, "Pack non créé", f"Impossible d'écrire le pack :\n{exc}")
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        QGuiApplication.clipboard().setText(build_prompt(model))
+        self._status_bar.showMessage(f"Pack pour ton IA créé : {folder}")
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setWindowTitle("Pack prêt pour ton IA")
+        box.setText(f"Pack créé dans :\n{folder}\n(et une copie .zip à côté)")
+        box.setInformativeText(
+            "1. Ouvre ton IA (Claude, ChatGPT, Gemini…).\n"
+            "2. Joins les 4 images et analysis.json (ou le .zip).\n"
+            "3. Colle le prompt : il est déjà dans ton presse-papiers (copie dans PROMPT.md).\n"
+            "4. Copie toute sa réponse, puis ici : Importer › Coller la réponse de l'IA."
+        )
+        open_btn = box.addButton("Ouvrir le dossier", QMessageBox.ButtonRole.ActionRole)
+        box.addButton(QMessageBox.StandardButton.Ok)
+        box.exec()
+        if box.clickedButton() is open_btn:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+
+    def _on_paste_recipe(self) -> None:
+        if not self._require_zones():
+            return
+        dialog = PasteRecipeDialog(self)
+        if dialog.exec() == QDialog.DialogCode.Accepted and dialog.recipe is not None:
+            self.apply_recipe(dialog.recipe)
+
+    def _on_open_recipe(self) -> None:
+        if not self._require_zones():
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Ouvrir une recette",
+            str(self._settings.lut_output_dir),
+            f"Recette StealZaLut (*{RECIPE_SUFFIX});;JSON (*.json);;Tous les fichiers (*.*)",
+        )
+        if not path:
+            return
+        try:
+            recipe = parse_recipe(Path(path).read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, RecipeError) as exc:
+            QMessageBox.critical(self, "Recette illisible", str(exc))
+            return
+        self.apply_recipe(recipe)
+
+    def _on_export_recipe(self) -> None:
+        model, table = self._zone_model, self._history.current.table
+        if model is None or table is None:
+            return
+        default = Path(self._settings.lut_output_dir) / f"{self._base_name()}{RECIPE_SUFFIX}"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Exporter la recette", str(default), f"Recette StealZaLut (*{RECIPE_SUFFIX})"
+        )
+        if not path:
+            return
+        state = self._history.current
+        data = recipe_to_dict(
+            table,
+            state.params,
+            state.tau,
+            model.analysis_id,
+            self._zone_count,
+            name=Path(path).stem,
+        )
+        try:
+            Path(path).write_text(dump_recipe(data), encoding="utf-8")
+        except OSError as exc:
+            QMessageBox.critical(self, "Recette non enregistrée", str(exc))
+            return
+        self._status_bar.showMessage(f"Recette enregistrée : {path}")
+
+    def apply_recipe(self, recipe: Recipe, check_analysis: bool = True) -> bool:
+        """Apply *recipe* to the current zones (one undo step).
+
+        Returns:
+            ``True`` if applied (or scheduled after a re-analysis).
+        """
+        model = self._zone_model
+        if model is None:
+            return False
+        if check_analysis and recipe.analysis_id and recipe.analysis_id != model.analysis_id:
+            choice = self._ask_other_analysis(recipe)
+            if choice == "cancel":
+                return False
+            if choice == "recompute" and recipe.zone_count is not None:
+                self._pending_recipe = recipe
+                self._zone_count_spin.setValue(recipe.zone_count)
+                if self._zone_count != recipe.zone_count:  # change refused
+                    self._pending_recipe = None
+                    return False
+                return True
+        try:
+            table = apply_recipe(recipe, model.table, model.reference.ids)
+        except RecipeError as exc:
+            QMessageBox.critical(self, "Recette non applicable", str(exc))
+            return False
+        params, tau = apply_global(recipe, self._history.current.params, self._history.current.tau)
+        state = EditState(table, params, tau)
+        if self._history.push(state):
+            self._restore(state)
+        title = f"« {recipe.name} »" if recipe.name else "importée"
+        # Shown now and again when the re-baked preview arrives (not overwritten by it)
+        note = f"Recette {title} appliquée : {len(recipe.links)} zone(s) réglée(s)."
+        self._status_note = f"{note} {recipe.description}".strip()
+        self._status_bar.showMessage(self._status_note)
+        return True
+
+    def _ask_other_analysis(self, recipe: Recipe) -> str:
+        """``"apply"``, ``"recompute"`` or ``"cancel"`` for a recipe of other zones."""
+        assert self._zone_model is not None
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Recette d'une autre analyse")
+        text = (
+            "Cette recette a été écrite pour d'autres zones "
+            f"(analyse {recipe.analysis_id}, ici {self._zone_model.analysis_id}).\n"
+            "Les numéros de zones ne désignent peut-être plus les mêmes choses."
+        )
+        recompute = None
+        k = recipe.zone_count
+        if k is not None and k != self._zone_count and MIN_ZONE_COUNT <= k <= MAX_ZONE_COUNT:
+            text += f"\n\nElle a été faite avec {k} zones (ici {self._zone_count})."
+            recompute = box.addButton(
+                f"Recalculer avec {k} zones", QMessageBox.ButtonRole.AcceptRole
+            )
+        box.setText(text)
+        apply_btn = box.addButton("Appliquer quand même", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+        clicked = box.clickedButton()
+        if recompute is not None and clicked is recompute:
+            return "recompute"
+        if clicked is apply_btn:
+            return "apply"
+        return "cancel"
+
+    def _require_zones(self) -> bool:
+        if self._zone_model is not None:
+            return True
+        QMessageBox.information(
+            self,
+            "Zones pas encore prêtes",
+            "Choisis la méthode « Zones » et charge une source et une référence : "
+            "la recette s'applique à leurs zones.",
+        )
+        return False
+
+    def _update_ai_buttons(self) -> None:
+        ready = self._zone_model is not None
+        for button in (self._ai_pack_btn, self._import_btn, self._export_recipe_btn):
+            button.setEnabled(ready)
+
+    def _base_name(self) -> str:
+        """``<source>_x_<reference>`` for default file names."""
+        src, ref = self._source_zone.image_path, self._reference_zone.image_path
+        if src is not None and ref is not None:
+            return f"{src.stem}_x_{ref.stem}"
+        return "stealzalut"
 
     def _on_all_auto(self) -> None:
         if self._zone_model is not None:
@@ -591,6 +830,10 @@ class MainWindow(QMainWindow):
         self._refresh_inspector()
         self._update_conflicts()
         self._update_undo_buttons()
+        self._update_ai_buttons()
+        pending, self._pending_recipe = self._pending_recipe, None
+        if pending is not None:
+            self.apply_recipe(pending, check_analysis=False)
 
     def _drop_zone_editor(self) -> None:
         """Forget the zones (images, method or zone count changed)."""
@@ -602,6 +845,7 @@ class MainWindow(QMainWindow):
         if self._history.current.table is not None:
             self._history.reset(replace(self._history.current, table=None))
         self._update_undo_buttons()
+        self._update_ai_buttons()
 
     def _confirm_discard_edits(self, action: str) -> bool:
         """Ask before losing correspondences edited by hand."""
@@ -755,8 +999,11 @@ class MainWindow(QMainWindow):
                 f"Preview ready — lissage relevé automatiquement à "
                 f"{grid_result.smoothing_used:.2f} pour éviter des inversions de luminosité."
             )
+        elif self._status_note:
+            self._status_bar.showMessage(self._status_note)
         else:
             self._status_bar.showMessage("Preview ready — click 'Export .cube' to save.")
+        self._status_note = ""
         logger.info("Transfer preview displayed")
 
     # ── Export ────────────────────────────────────────────────────────────

@@ -11,16 +11,12 @@ import cv2
 import numpy as np
 from numpy.typing import NDArray
 
+from stealzalut.core.palette import upsample_mask
+
 #: Outline colour (RGB), the app's accent blue.
 OUTLINE_RGB = (79, 128, 255)
 #: Brightness kept outside the highlighted zone.
 DIM_FACTOR = 0.28
-
-
-def upsample_mask(mask: NDArray[np.bool_], width: int, height: int) -> NDArray[np.bool_]:
-    """Resize a boolean mask with smooth (non-blocky) edges."""
-    soft = cv2.resize(mask.astype(np.float32), (width, height), interpolation=cv2.INTER_LINEAR)
-    return np.asarray(soft >= 0.5, dtype=np.bool_)
 
 
 def highlight_zone(image_rgb: NDArray[np.uint8], mask: NDArray[np.bool_]) -> NDArray[np.uint8]:

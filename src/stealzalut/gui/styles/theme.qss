@@ -323,7 +323,8 @@ QStatusBar {
     background: #5c6370;
 }
 
-#undoButton, #redoButton, #allAutoButton, #revertZoneButton {
+#undoButton, #redoButton, #allAutoButton, #revertZoneButton,
+#aiPackButton, #importRecipeButton, #exportRecipeButton {
     background-color: #282c34;
     border: 1px solid #3a3f4b;
     border-radius: 4px;
@@ -331,12 +332,14 @@ QStatusBar {
     padding: 4px 10px;
 }
 
-#undoButton:hover, #redoButton:hover, #allAutoButton:hover, #revertZoneButton:hover {
+#undoButton:hover, #redoButton:hover, #allAutoButton:hover, #revertZoneButton:hover,
+#aiPackButton:hover, #importRecipeButton:hover, #exportRecipeButton:hover {
     border-color: #4f80ff;
     color: #ffffff;
 }
 
-#undoButton:disabled, #redoButton:disabled, #revertZoneButton:disabled {
+#undoButton:disabled, #redoButton:disabled, #revertZoneButton:disabled,
+#aiPackButton:disabled, #importRecipeButton:disabled, #exportRecipeButton:disabled {
     color: #5c6370;
     border-color: #2e3238;
 }
@@ -347,4 +350,57 @@ QSpinBox {
     border-radius: 4px;
     color: #e0e2e6;
     padding: 3px 6px;
+}
+
+/* ── Dialogs (paste AI answer, message boxes) ──────────────────────────────── */
+QDialog, QMessageBox {
+    background-color: #1a1b1e;
+}
+
+QPlainTextEdit {
+    background-color: #16181b;
+    border: 1px solid #3a3f4b;
+    border-radius: 4px;
+    color: #e0e2e6;
+    font-family: Consolas, "Cascadia Mono", Menlo, monospace;
+    font-size: 12px;
+    selection-background-color: #3b5998;
+}
+
+QPlainTextEdit:focus {
+    border-color: #4f80ff;
+}
+
+QDialog QPushButton {
+    background-color: #282c34;
+    border: 1px solid #3a3f4b;
+    border-radius: 4px;
+    color: #e0e2e6;
+    padding: 5px 14px;
+    min-width: 70px;
+}
+
+QDialog QPushButton:hover {
+    border-color: #4f80ff;
+    color: #ffffff;
+}
+
+QMenu {
+    background-color: #282c34;
+    border: 1px solid #3a3f4b;
+    color: #e0e2e6;
+    padding: 4px;
+}
+
+QMenu::item {
+    padding: 5px 18px;
+    border-radius: 3px;
+}
+
+QMenu::item:selected {
+    background-color: #3b5998;
+}
+
+QMenu::item:disabled {
+    color: #5c6370;
 }

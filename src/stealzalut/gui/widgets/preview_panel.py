@@ -10,12 +10,13 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import cv2
 import numpy as np
 from numpy.typing import NDArray
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import QLabel, QSizePolicy, QVBoxLayout, QWidget
+
+from stealzalut.gui.overlay import highlight_zone
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,8 @@ class PreviewPanel(QWidget):
 
         self._title = title
         self._pixmap: QPixmap | None = None
+        self._image_rgb: NDArray[np.uint8] | None = None
+        self._highlight: NDArray[np.bool_] | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -72,29 +75,44 @@ class PreviewPanel(QWidget):
         Args:
             image_rgb: RGB image of shape ``(H, W, 3)``, dtype ``uint8``.
         """
-        # Convert RGB to BGR for consistency, then to Qt
-        bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
-        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-        h, w, ch = rgb.shape
-        bytes_per_line = ch * w
-        qt_image = QImage(
-            rgb.data.tobytes(),
-            w,
-            h,
-            bytes_per_line,
-            QImage.Format.Format_RGB888,
-        )
-        self._pixmap = QPixmap.fromImage(qt_image)
-        self._update_display()
-        logger.debug("Preview updated: %dx%d", w, h)
+        self._image_rgb = np.ascontiguousarray(image_rgb)
+        shown = self._image_rgb
+        if self._highlight is not None:
+            shown = highlight_zone(shown, self._highlight)
+        self._show_rgb(shown)
+        logger.debug("Preview updated: %dx%d", image_rgb.shape[1], image_rgb.shape[0])
+
+    def set_highlight(self, mask: NDArray[np.bool_] | None) -> None:
+        """Highlight a colour zone of the source on the preview (``None`` = off).
+
+        The highlight is kept when a new preview image arrives.
+        """
+        self._highlight = mask
+        if self._image_rgb is None:
+            return
+        shown = self._image_rgb if mask is None else highlight_zone(self._image_rgb, mask)
+        self._show_rgb(shown)
+
+    @property
+    def image_rgb(self) -> NDArray[np.uint8] | None:
+        """The current preview image (without highlight), or ``None``."""
+        return self._image_rgb
 
     def clear(self) -> None:
         """Clear the preview and show the placeholder text."""
         self._pixmap = None
+        self._image_rgb = None
+        self._highlight = None
         self._image_label.setPixmap(QPixmap())
         self._image_label.setText("No preview available")
 
     # ── Internal ─────────────────────────────────────────────────────────
+
+    def _show_rgb(self, rgb: NDArray[np.uint8]) -> None:
+        h, w, ch = rgb.shape
+        qt_image = QImage(rgb.data.tobytes(), w, h, ch * w, QImage.Format.Format_RGB888)
+        self._pixmap = QPixmap.fromImage(qt_image)
+        self._update_display()
 
     def _update_display(self) -> None:
         """Scale the stored pixmap to fit the label."""

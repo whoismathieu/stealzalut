@@ -302,10 +302,45 @@ def fit_zone_transfer(
     table = CorrespondenceTable.from_matching(match_zones(src_palette, ref_palette))
     global_model = fit_transfer(source, reference, method="oklab")
     assert isinstance(global_model, OklabTransferModel)
-    return ZoneTransferModel(
+    model = ZoneTransferModel(
         source=src_palette,
         reference=ref_palette,
         table=table,
         global_model=global_model,
         params=params or ZoneBakeParams(),
     )
+    return model.with_table(harmonize_conflicts(model))
+
+
+def harmonize_conflicts(model: ZoneTransferModel, max_rounds: int = 4) -> CorrespondenceTable:
+    """Give overlapping source zones the same targets.
+
+    k-means often splits one colour mass (e.g. foliage) into neighbouring
+    zones; the matching may then send them to different targets, which the
+    LUT can only blend (a conflict).  Each conflicting pair gets the union of
+    both target sets, weighted by zone area.  Only automatic links are
+    changed: links set by the user or an AI are kept as they are.
+    """
+    table = model.table
+    for _ in range(max_rounds):
+        conflicts = find_conflicts(model.with_table(table))
+        changed = False
+        for conflict in conflicts:
+            a, b = table.link(conflict.zone_a), table.link(conflict.zone_b)
+            if a.origin != "auto" or b.origin != "auto" or a.locked or b.locked:
+                continue
+            area_a = model.source.zone(a.source_zone).area
+            area_b = model.source.zone(b.source_zone).area
+            merged: dict[int, float] = {}
+            for link, area in ((a, area_a), (b, area_b)):
+                for ref_id, weight in link.targets.items():
+                    merged[ref_id] = merged.get(ref_id, 0.0) + weight * area
+            total = sum(merged.values())
+            targets = {k: w / total for k, w in sorted(merged.items())}
+            if targets != a.targets or targets != b.targets:
+                table = table.with_link(replace(a, targets=targets))
+                table = table.with_link(replace(b, targets=dict(targets)))
+                changed = True
+        if not changed:
+            break
+    return table

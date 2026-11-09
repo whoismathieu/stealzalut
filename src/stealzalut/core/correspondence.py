@@ -111,3 +111,107 @@ class CorrespondenceTable:
                 for link in self.links
             ),
         )
+
+    @property
+    def has_manual_links(self) -> bool:
+        """True when at least one link was set by the user or an AI."""
+        return any(link.origin != "auto" for link in self.links)
+
+    def is_compatible(self, source_ids: tuple[int, ...], reference_ids: tuple[int, ...]) -> bool:
+        """True when every zone id of the table exists in these palettes."""
+        refs = set(reference_ids)
+        return tuple(link.source_zone for link in self.links) == tuple(source_ids) and all(
+            set(link.targets) <= refs for link in self.links
+        )
+
+
+# ── Edits (pure: each returns a new table or link) ───────────────────────────
+
+
+def retarget(
+    table: CorrespondenceTable,
+    source_zone: int,
+    reference_zone: int,
+    *,
+    add: bool = False,
+    origin: Origin = "user",
+) -> CorrespondenceTable:
+    """Send *source_zone* to *reference_zone*.
+
+    Args:
+        add: Add the target next to the existing ones (equal share for the
+            newcomer, the others scaled down) instead of replacing them.
+
+    A retargeted zone is unlocked; any AI rationale no longer applies.
+    """
+    link = table.link(source_zone)
+    if add and link.targets:
+        if reference_zone in link.targets:
+            return table
+        share = 1.0 / (len(link.targets) + 1)
+        targets = {k: w * (1.0 - share) for k, w in link.targets.items()}
+        targets[reference_zone] = share
+    else:
+        targets = {reference_zone: 1.0}
+    return table.with_link(
+        replace(link, targets=targets, locked=False, origin=origin, rationale="")
+    )
+
+
+def remove_target(
+    table: CorrespondenceTable,
+    source_zone: int,
+    reference_zone: int,
+    origin: Origin = "user",
+) -> CorrespondenceTable:
+    """Drop one target of *source_zone* (the last target can't be removed)."""
+    link = table.link(source_zone)
+    new_link = link_without_target(link, reference_zone, origin)
+    return table if new_link is link else table.with_link(new_link)
+
+
+def link_without_target(link: Link, reference_zone: int, origin: Origin = "user") -> Link:
+    """*link* minus one target, the others renormalised (the last one stays)."""
+    if reference_zone not in link.targets or len(link.targets) < 2:
+        return link
+    rest = {k: w for k, w in link.targets.items() if k != reference_zone}
+    total = sum(rest.values())
+    targets = {k: w / total for k, w in rest.items()} if total > 0 else _equal(rest)
+    return replace(link, targets=targets, origin=origin)
+
+
+def set_target_weight(link: Link, reference_zone: int, weight: float) -> Link:
+    """Give *reference_zone* this share of the link; the others share the rest
+    in their current proportions."""
+    if reference_zone not in link.targets or len(link.targets) < 2:
+        return link
+    weight = min(max(weight, 0.0), 1.0)
+    others = {k: w for k, w in link.targets.items() if k != reference_zone}
+    total = sum(others.values())
+    scaled = (
+        {k: w / total * (1.0 - weight) for k, w in others.items()}
+        if total > 0
+        else {k: (1.0 - weight) / len(others) for k in others}
+    )
+    targets = {k: (weight if k == reference_zone else scaled[k]) for k in link.targets}
+    return replace(link, targets=targets, origin="user")
+
+
+def set_locked(table: CorrespondenceTable, source_zone: int, locked: bool) -> CorrespondenceTable:
+    link = table.link(source_zone)
+    if link.locked == locked:
+        return table
+    return table.with_link(replace(link, locked=locked, origin="user"))
+
+
+def revert_to_auto(
+    table: CorrespondenceTable,
+    auto: CorrespondenceTable,
+    source_zone: int,
+) -> CorrespondenceTable:
+    """Restore the automatic link of *source_zone*."""
+    return table.with_link(auto.link(source_zone))
+
+
+def _equal(targets: dict[int, float]) -> dict[int, float]:
+    return {k: 1.0 / len(targets) for k in targets}

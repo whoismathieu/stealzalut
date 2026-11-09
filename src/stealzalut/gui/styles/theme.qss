@@ -262,3 +262,89 @@ QStatusBar {
     border-color: #4f80ff;
     color: #ffffff;
 }
+
+/* ── Correspondence editor ─────────────────────────────────────────────────── */
+#correspondenceView {
+    background-color: #16181b;
+    border-radius: 6px;
+}
+
+#correspondenceScroll, #inspectorScroll {
+    background-color: transparent;
+}
+
+#conflictBanner {
+    background-color: #3a2a14;
+    color: #ffcc80;
+    border-left: 3px solid #ff9f43;
+    border-radius: 4px;
+    padding: 6px 10px;
+}
+
+#inspectorTitle {
+    color: #e0e2e6;
+    font-size: 13px;
+}
+
+#inspectorHint {
+    color: #8a919e;
+    padding: 12px 0;
+}
+
+#inspectorSection {
+    color: #9da5b4;
+    font-weight: 600;
+    padding-top: 4px;
+}
+
+#inspectorRationale {
+    color: #c4b5fd;
+}
+
+#zoneInspector QSlider::groove:horizontal, #tauSlider::groove:horizontal {
+    height: 4px;
+    background: #3a3f4b;
+    border-radius: 2px;
+}
+
+#zoneInspector QSlider::sub-page:horizontal, #tauSlider::sub-page:horizontal {
+    background: #4f80ff;
+    border-radius: 2px;
+}
+
+#zoneInspector QSlider::handle:horizontal, #tauSlider::handle:horizontal {
+    background: #e0e2e6;
+    width: 12px;
+    margin: -5px 0;
+    border-radius: 6px;
+}
+
+#zoneInspector QSlider::handle:horizontal:disabled {
+    background: #5c6370;
+}
+
+#undoButton, #redoButton, #allAutoButton, #revertZoneButton {
+    background-color: #282c34;
+    border: 1px solid #3a3f4b;
+    border-radius: 4px;
+    color: #c0c6d4;
+    padding: 4px 10px;
+}
+
+#undoButton:hover, #redoButton:hover, #allAutoButton:hover, #revertZoneButton:hover {
+    border-color: #4f80ff;
+    color: #ffffff;
+}
+
+#undoButton:disabled, #redoButton:disabled, #revertZoneButton:disabled {
+    color: #5c6370;
+    border-color: #2e3238;
+}
+
+QSpinBox {
+    background-color: #282c34;
+    border: 1px solid #3a3f4b;
+    border-radius: 4px;
+    color: #e0e2e6;
+    padding: 3px 6px;
+}

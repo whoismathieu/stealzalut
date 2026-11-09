@@ -15,6 +15,7 @@ from stealzalut.core.zone_transfer import (
     bhattacharyya_coefficient,
     find_conflicts,
     fit_zone_transfer,
+    harmonize_conflicts,
 )
 
 
@@ -138,6 +139,21 @@ class TestConflicts:
 
     def test_distinct_zones_do_not_conflict(self, model: ZoneTransferModel) -> None:
         assert find_conflicts(model) == []
+
+    def test_automatic_table_has_no_conflict(self) -> None:
+        """Zones split from one colour mass get the same automatic targets."""
+        src = _stripes([(60, 120, 60), (64, 124, 64), (230, 230, 230)], noise=6.0)
+        m = fit_zone_transfer(src, REFERENCE, zone_count=3)
+        assert find_conflicts(m) == []
+
+    def test_harmonize_keeps_manual_links(self) -> None:
+        src = _stripes([(60, 120, 60), (64, 124, 64), (230, 230, 230)], noise=6.0)
+        m = fit_zone_transfer(src, REFERENCE, zone_count=3)
+        table = m.table.with_link(Link(source_zone=1, targets={1: 1.0}, origin="user"))
+        table = table.with_link(Link(source_zone=2, targets={3: 1.0}))
+        harmonized = harmonize_conflicts(m.with_table(table))
+        assert harmonized.link(1).targets == {1: 1.0}  # user link untouched
+        assert harmonized.link(2).targets == {3: 1.0}  # only auto pairs are merged
 
     def test_overlapping_zones_sent_apart_conflict(self) -> None:
         # Two very similar greens (one zone each) sent to opposite targets

@@ -8,16 +8,19 @@ directly — all matrix operations run in QThread workers.
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from functools import partial
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -25,6 +28,9 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QScrollArea,
+    QSlider,
+    QSpinBox,
     QSplitter,
     QStatusBar,
     QVBoxLayout,
@@ -33,15 +39,32 @@ from PySide6.QtWidgets import (
 
 from stealzalut.config import Settings
 from stealzalut.core.color_transfer import METHOD_LABELS, TransferModel
+from stealzalut.core.correspondence import CorrespondenceTable, Link
 from stealzalut.core.grading import GridResult
 from stealzalut.core.lut_engine import VALID_LUT_SIZES
+from stealzalut.core.palette import DEFAULT_ZONE_COUNT, MAX_ZONE_COUNT, MIN_ZONE_COUNT
+from stealzalut.core.zone_transfer import (
+    Conflict,
+    ZoneBakeParams,
+    ZoneTransferModel,
+    find_conflicts,
+)
+from stealzalut.gui.history import EditState, History
 from stealzalut.gui.widgets.adjustments_panel import AdjustmentsPanel
+from stealzalut.gui.widgets.correspondence_view import SOURCE, CorrespondenceView
 from stealzalut.gui.widgets.image_drop_zone import ImageDropZone
 from stealzalut.gui.widgets.preview_panel import PreviewPanel
+from stealzalut.gui.widgets.zone_inspector import ZoneInspector
 from stealzalut.workers.export_worker import ExportWorker
 from stealzalut.workers.transfer_worker import TransferWorker
 
 logger = logging.getLogger(__name__)
+
+#: Delay between a correspondence edit and the preview refresh.
+EDIT_DEBOUNCE_MS = 75
+_TAU_STEPS = 100  # slider units per τ unit
+_IDLE_MESSAGE = "Charge une source et une référence pour voir leurs zones."
+_ANALYSING_MESSAGE = "Analyse des zones de couleur…"
 
 
 class MainWindow(QMainWindow):
@@ -53,7 +76,12 @@ class MainWindow(QMainWindow):
         │  Source Image  │  Reference Image  │   Preview   │
         │  (drop zone)   │  (drop zone)      │   (result)  │
         ├──────────────────────────────────────────────────┤
-        │  LUT Size: [17 ▼ 33 | 64]  │  [Export .cube]    │
+        │  Correspondances (zones method only)             │
+        │  S1 ═══▶ R2   …            │  Zone inspector     │
+        ├──────────────────────────────────────────────────┤
+        │  Ajustements (sliders)                           │
+        ├──────────────────────────────────────────────────┤
+        │  Algorithm │ LUT Size │ Undo/Redo │ [Export]     │
         ├──────────────────────────────────────────────────┤
         │  ████████████████░░░░░░░░  45%                   │
         └──────────────────────────────────────────────────┘
@@ -72,14 +100,28 @@ class MainWindow(QMainWindow):
         self._model_cache: tuple[Any, Any, str, TransferModel] | None = None
         self._pending_model_key: tuple[Any, Any, str] | None = None
         self._last_grid_result: GridResult | None = None
+        # Zones method: raw fitted model shown in the editor (auto table)
+        self._zone_model: ZoneTransferModel | None = None
+        self._zone_count = DEFAULT_ZONE_COUNT
 
         self.setWindowTitle("StealZaLut — Colour LUT Generator")
         self.setMinimumSize(900, 680)
-        self.resize(1100, 780)
+        self.resize(1280, 940)
 
         self._build_ui()
+        self._history = History(EditState(None, self._adjustments.params(), self._tau()))
+        self._current_method = str(self._algo_combo.currentData())
+
+        # Correspondence edits refresh the preview once the user pauses
+        self._edit_timer = QTimer(self)
+        self._edit_timer.setSingleShot(True)
+        self._edit_timer.setInterval(EDIT_DEBOUNCE_MS)
+        self._edit_timer.timeout.connect(self._refresh_preview_if_ready)
+
         self._connect_signals()
+        self._update_zone_panel_visibility()
         self._update_export_button_state()
+        self._update_undo_buttons()
 
         logger.info("MainWindow initialized")
 
@@ -124,7 +166,15 @@ class MainWindow(QMainWindow):
 
         # Equal widths
         splitter.setSizes([350, 350, 350])
-        root_layout.addWidget(splitter, stretch=1)
+
+        # Images on top, correspondence editor below (resizable)
+        self._main_splitter = QSplitter(Qt.Orientation.Vertical)
+        self._main_splitter.setChildrenCollapsible(False)
+        self._main_splitter.addWidget(splitter)
+        self._corr_group = self._build_correspondence_panel()
+        self._main_splitter.addWidget(self._corr_group)
+        self._main_splitter.setSizes([330, 420])
+        root_layout.addWidget(self._main_splitter, stretch=1)
 
         # ── Adjustments (sliders on top of the transfer) ─────────────
         adjust_group = QGroupBox("Ajustements")
@@ -169,6 +219,16 @@ class MainWindow(QMainWindow):
 
         controls_layout.addStretch()
 
+        # Undo / redo (correspondences and sliders)
+        self._undo_btn = QPushButton("↶ Annuler")
+        self._undo_btn.setObjectName("undoButton")
+        self._undo_btn.setToolTip("Annuler la dernière modification (Ctrl+Z)")
+        controls_layout.addWidget(self._undo_btn)
+        self._redo_btn = QPushButton("↷ Rétablir")
+        self._redo_btn.setObjectName("redoButton")
+        self._redo_btn.setToolTip("Rétablir la modification annulée (Ctrl+Y)")
+        controls_layout.addWidget(self._redo_btn)
+
         # Clear button
         self._clear_btn = QPushButton("Clear All")
         self._clear_btn.setObjectName("clearButton")
@@ -196,6 +256,87 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self._status_bar)
         self._status_bar.showMessage("Ready — drop a source and reference image to begin.")
 
+    def _build_correspondence_panel(self) -> QGroupBox:
+        """Correspondence editor: toolbar, conflict banner, view and inspector."""
+        group = QGroupBox("Correspondances entre zones")
+        layout = QVBoxLayout(group)
+        layout.setSpacing(6)
+
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(8)
+        zones_label = QLabel("Zones :")
+        zones_label.setObjectName("controlLabel")
+        toolbar.addWidget(zones_label)
+        self._zone_count_spin = QSpinBox()
+        self._zone_count_spin.setObjectName("zoneCountSpin")
+        self._zone_count_spin.setRange(MIN_ZONE_COUNT, MAX_ZONE_COUNT)
+        self._zone_count_spin.setValue(DEFAULT_ZONE_COUNT)
+        self._zone_count_spin.setKeyboardTracking(False)
+        self._zone_count_spin.setToolTip(
+            "Nombre de zones de couleur par image.\n"
+            "Plus de zones = réglage plus fin, mais plus de liens à vérifier.\n"
+            "Changer ce nombre relance l'analyse."
+        )
+        toolbar.addWidget(self._zone_count_spin)
+
+        tau_tooltip = (
+            "Comment les zones se fondent entre elles dans la LUT.\n"
+            "À gauche : chaque zone garde nettement sa propre couleur.\n"
+            "À droite : transitions plus douces entre zones voisines."
+        )
+        tau_label = QLabel("Transitions :")
+        tau_label.setObjectName("controlLabel")
+        tau_label.setToolTip(tau_tooltip)
+        toolbar.addWidget(tau_label)
+        self._tau_slider = QSlider(Qt.Orientation.Horizontal)
+        self._tau_slider.setObjectName("tauSlider")
+        self._tau_slider.setRange(25, 300)
+        self._tau_slider.setValue(round(ZoneBakeParams().tau * _TAU_STEPS))
+        self._tau_slider.setFixedWidth(160)
+        self._tau_slider.setToolTip(tau_tooltip)
+        toolbar.addWidget(self._tau_slider)
+        self._tau_value = QLabel()
+        self._tau_value.setObjectName("adjustValue")
+        self._tau_value.setMinimumWidth(36)
+        toolbar.addWidget(self._tau_value)
+        self._refresh_tau_label()
+
+        toolbar.addStretch()
+        self._all_auto_btn = QPushButton("Tout remettre en auto")
+        self._all_auto_btn.setObjectName("allAutoButton")
+        self._all_auto_btn.setToolTip("Revenir à l'appariement automatique pour toutes les zones")
+        toolbar.addWidget(self._all_auto_btn)
+        layout.addLayout(toolbar)
+
+        self._conflict_banner = QLabel()
+        self._conflict_banner.setObjectName("conflictBanner")
+        self._conflict_banner.setWordWrap(True)
+        self._conflict_banner.hide()
+        layout.addWidget(self._conflict_banner)
+
+        body = QHBoxLayout()
+        body.setSpacing(8)
+        self._corr_view = CorrespondenceView()
+        self._corr_view.clear(_IDLE_MESSAGE)
+        view_scroll = QScrollArea()
+        view_scroll.setObjectName("correspondenceScroll")
+        view_scroll.setWidgetResizable(True)
+        view_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        view_scroll.setWidget(self._corr_view)
+        body.addWidget(view_scroll, stretch=1)
+
+        self._inspector = ZoneInspector()
+        inspector_scroll = QScrollArea()
+        inspector_scroll.setObjectName("inspectorScroll")
+        inspector_scroll.setWidgetResizable(True)
+        inspector_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        inspector_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        inspector_scroll.setWidget(self._inspector)
+        inspector_scroll.setFixedWidth(370)
+        body.addWidget(inspector_scroll)
+        layout.addLayout(body, stretch=1)
+        return group
+
     # ── Signal wiring ────────────────────────────────────────────────────
 
     def _connect_signals(self) -> None:
@@ -214,34 +355,66 @@ class MainWindow(QMainWindow):
 
         # Algorithm or LUT size changed → the previewed grid changes too
         self._algo_combo.currentIndexChanged.connect(self._on_algo_changed)
-        self._size_combo.currentIndexChanged.connect(self._on_algo_changed)
+        self._size_combo.currentIndexChanged.connect(self._on_size_changed)
 
         # Slider moved (debounced by the panel) → rebuild the grid
         self._adjustments.params_changed.connect(self._on_params_changed)
 
+        # Correspondence editor
+        self._corr_view.table_changed.connect(self._on_table_edited)
+        self._corr_view.zone_selected.connect(self._on_zone_selected)
+        self._corr_view.zone_hovered.connect(self._on_zone_hovered)
+        self._inspector.link_changed.connect(self._on_link_edited)
+        self._zone_count_spin.valueChanged.connect(self._on_zone_count_changed)
+        self._tau_slider.valueChanged.connect(self._on_tau_changed)
+        self._all_auto_btn.clicked.connect(self._on_all_auto)
+
+        # Undo / redo
+        self._undo_btn.clicked.connect(self.undo)
+        self._redo_btn.clicked.connect(self.redo)
+        QShortcut(QKeySequence.StandardKey.Undo, self, self.undo)
+        QShortcut(QKeySequence.StandardKey.Redo, self, self.redo)
+        QShortcut(QKeySequence("Ctrl+Y"), self, self.redo)
+
     # ── Slots ────────────────────────────────────────────────────────────
 
     def _on_algo_changed(self, _index: int) -> None:
-        """Called when the user changes the algorithm or the LUT size."""
-        if self._source_zone.has_image and self._reference_zone.has_image:
-            self._run_transfer_preview()
+        """Called when the user changes the algorithm."""
+        method = str(self._algo_combo.currentData())
+        if method == self._current_method:
+            return
+        if not self._confirm_discard_edits("Changer de méthode"):
+            self._algo_combo.blockSignals(True)
+            self._algo_combo.setCurrentIndex(self._algo_combo.findData(self._current_method))
+            self._algo_combo.blockSignals(False)
+            return
+        self._current_method = method
+        self._drop_zone_editor()
+        self._update_zone_panel_visibility()
+        self._refresh_preview_if_ready()
 
-    def _on_params_changed(self, _params: Any) -> None:
+    def _on_size_changed(self, _index: int) -> None:
+        """Called when the user changes the LUT size."""
+        self._refresh_preview_if_ready()
+
+    def _on_params_changed(self, params: Any) -> None:
         """Called (debounced) when an adjustment slider moves."""
-        if self._source_zone.has_image and self._reference_zone.has_image:
-            self._run_transfer_preview()
+        changed = self._history.push(replace(self._history.current, params=params), "params")
+        self._update_undo_buttons()
+        if changed:
+            self._refresh_preview_if_ready()
 
     def _on_image_changed(self, _image: Any) -> None:
         """Called when either source or reference image is loaded."""
         self._model_cache = None
+        self._drop_zone_editor()
         self._update_export_button_state()
-
-        if self._source_zone.has_image and self._reference_zone.has_image:
-            self._run_transfer_preview()
+        self._refresh_preview_if_ready()
 
     def _on_image_cleared(self) -> None:
         """Called when an image is removed."""
         self._model_cache = None
+        self._drop_zone_editor()
         self._update_export_button_state()
         self._preview.clear()
         self._progress_bar.setValue(0)
@@ -280,6 +453,206 @@ class MainWindow(QMainWindow):
 
         self._run_export(Path(path))
 
+    # ── Correspondence editor ────────────────────────────────────────────
+
+    def _on_table_edited(self, table: CorrespondenceTable, merge_key: str = "") -> None:
+        """A table edit from the view or the inspector."""
+        if self._zone_model is None:
+            return
+        state = replace(self._history.current, table=table)
+        if self._history.push(state, merge_key or None):
+            self._show_editor_state()
+            self._edit_timer.start()
+        self._update_undo_buttons()
+
+    def _on_link_edited(self, link: Link, merge_key: str) -> None:
+        table = self._history.current.table
+        if table is not None:
+            self._on_table_edited(table.with_link(link), merge_key)
+
+    def _on_all_auto(self) -> None:
+        if self._zone_model is not None:
+            self._on_table_edited(self._zone_model.table)
+
+    def _on_zone_selected(self, _zone_id: int) -> None:
+        self._refresh_inspector()
+
+    def _on_zone_hovered(self, side: str, zone_id: int) -> None:
+        """Highlight the hovered zone on the matching images."""
+        model = self._zone_model
+        source_mask = reference_mask = None
+        if model is not None and zone_id:
+            if side == SOURCE:
+                source_mask = model.source.labels == zone_id
+            else:
+                reference_mask = model.reference.labels == zone_id
+        self._source_zone.set_highlight(source_mask)
+        self._preview.set_highlight(source_mask)
+        self._reference_zone.set_highlight(reference_mask)
+
+    def _on_zone_count_changed(self, value: int) -> None:
+        if value == self._zone_count:
+            return
+        if not self._confirm_discard_edits("Changer le nombre de zones"):
+            self._zone_count_spin.blockSignals(True)
+            self._zone_count_spin.setValue(self._zone_count)
+            self._zone_count_spin.blockSignals(False)
+            return
+        self._zone_count = value
+        self._drop_zone_editor()
+        self._refresh_preview_if_ready()
+
+    def _on_tau_changed(self, _value: int) -> None:
+        self._refresh_tau_label()
+        if self._history.push(replace(self._history.current, tau=self._tau()), "tau"):
+            self._update_conflicts()
+            self._edit_timer.start()
+        self._update_undo_buttons()
+
+    def undo(self) -> None:
+        """Undo the last correspondence or slider change."""
+        state = self._history.undo()
+        if state is not None:
+            self._restore(state)
+
+    def redo(self) -> None:
+        """Redo the last undone change."""
+        state = self._history.redo()
+        if state is not None:
+            self._restore(state)
+
+    def _restore(self, state: EditState) -> None:
+        """Show *state* everywhere (after undo/redo)."""
+        # The panel re-emits these params later; the history ignores them (no change)
+        self._adjustments.set_params(state.params)
+        self._tau_slider.blockSignals(True)
+        self._tau_slider.setValue(round(state.tau * _TAU_STEPS))
+        self._tau_slider.blockSignals(False)
+        self._refresh_tau_label()
+        self._show_editor_state()
+        self._update_undo_buttons()
+        self._edit_timer.start()
+
+    def _show_editor_state(self) -> None:
+        """Push the current table to the view, inspector and conflict banner."""
+        table = self._history.current.table
+        if self._zone_model is None or table is None:
+            return
+        self._corr_view.set_table(table)
+        self._refresh_inspector()
+        self._update_conflicts()
+
+    def _refresh_inspector(self) -> None:
+        model, table = self._zone_model, self._history.current.table
+        zone_id = self._corr_view.selected_zone
+        if model is None or table is None or not zone_id:
+            self._inspector.set_zone(None, None, None, None)
+            return
+        self._inspector.set_zone(
+            table.link(zone_id),
+            model.source.zone(zone_id),
+            model.reference,
+            model.table.link(zone_id),
+        )
+
+    def _update_conflicts(self) -> None:
+        if self._zone_model is None:
+            self._show_conflicts([])
+            return
+        model = self._effective_model(self._zone_model)
+        assert isinstance(model, ZoneTransferModel)
+        self._show_conflicts(find_conflicts(model))
+
+    def _show_conflicts(self, conflicts: list[Conflict]) -> None:
+        self._corr_view.set_conflicts(conflicts)
+        if not conflicts:
+            self._conflict_banner.hide()
+            return
+        pairs = ", ".join(f"S{c.zone_a} et S{c.zone_b}" for c in conflicts)
+        if len(conflicts) == 1:
+            text = (
+                f"⚠ Les zones {pairs} ont des couleurs trop proches pour être traitées "
+                "différemment : la LUT va les mélanger."
+            )
+        else:
+            text = (
+                "⚠ Ces zones ont des couleurs trop proches pour être traitées différemment "
+                f"(la LUT va les mélanger) : {pairs}."
+            )
+        text += " Donne-leur la même cible, ou verrouille l'une des deux."
+        self._conflict_banner.setText(text)
+        self._conflict_banner.show()
+
+    def _setup_zone_editor(self, model: ZoneTransferModel) -> None:
+        """Show the zones of a freshly fitted model, with its automatic table."""
+        self._zone_model = model
+        self._history.reset(replace(self._history.current, table=model.table))
+        self._corr_view.set_data(model.source, model.reference, model.table, model.table)
+        self._refresh_inspector()
+        self._update_conflicts()
+        self._update_undo_buttons()
+
+    def _drop_zone_editor(self) -> None:
+        """Forget the zones (images, method or zone count changed)."""
+        self._zone_model = None
+        self._corr_view.clear(_ANALYSING_MESSAGE if self._has_both_images() else _IDLE_MESSAGE)
+        self._inspector.set_zone(None, None, None, None)
+        self._show_conflicts([])
+        self._on_zone_hovered("", 0)
+        if self._history.current.table is not None:
+            self._history.reset(replace(self._history.current, table=None))
+        self._update_undo_buttons()
+
+    def _confirm_discard_edits(self, action: str) -> bool:
+        """Ask before losing correspondences edited by hand."""
+        table = self._history.current.table
+        if table is None or not table.has_manual_links:
+            return True
+        answer = QMessageBox.question(
+            self,
+            "Correspondances modifiées",
+            f"{action} relance l'analyse des zones : les correspondances que tu as "
+            "modifiées seront perdues.\n\nContinuer ?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return answer == QMessageBox.StandardButton.Yes
+
+    def _effective_model(self, model: TransferModel) -> TransferModel:
+        """*model* with the user's correspondences and zone separation."""
+        if not isinstance(model, ZoneTransferModel):
+            return model
+        state = self._history.current
+        table = state.table
+        if table is None or not table.is_compatible(model.source.ids, model.reference.ids):
+            table = model.table
+        return model.with_table(table).with_params(ZoneBakeParams(tau=state.tau))
+
+    def _tau(self) -> float:
+        return self._tau_slider.value() / _TAU_STEPS
+
+    def _refresh_tau_label(self) -> None:
+        self._tau_value.setText(f"{self._tau():.2f}")
+
+    def _update_zone_panel_visibility(self) -> None:
+        self._corr_group.setVisible(self._current_method == "zones")
+
+    def _update_undo_buttons(self) -> None:
+        self._undo_btn.setEnabled(self._history.can_undo)
+        self._redo_btn.setEnabled(self._history.can_redo)
+
+    def _method_key(self) -> str:
+        """Model cache key: the method, plus the zone count for zones."""
+        method = str(self._algo_combo.currentData())
+        return f"zones:{self._zone_count}" if method == "zones" else method
+
+    def _has_both_images(self) -> bool:
+        return self._source_zone.has_image and self._reference_zone.has_image
+
+    def _refresh_preview_if_ready(self) -> None:
+        if self._has_both_images():
+            self._run_transfer_preview()
+
     # ── Transfer preview ─────────────────────────────────────────────────
 
     def _run_transfer_preview(self) -> None:
@@ -298,8 +671,10 @@ class MainWindow(QMainWindow):
         self._status_bar.showMessage(f"Computing colour transfer preview ({method})…")
         self._progress_bar.setValue(0)
 
-        model = self._cached_model(source, reference, method)
-        self._pending_model_key = (source, reference, method)
+        key = self._method_key()
+        raw_model = self._cached_model(source, reference, key)
+        self._pending_model_key = (source, reference, key)
+        model = None if raw_model is None else self._effective_model(raw_model)
 
         self._transfer_worker = TransferWorker(
             source,
@@ -308,6 +683,8 @@ class MainWindow(QMainWindow):
             lut_size=lut_size,
             params=self._adjustments.params(),
             model=model,
+            zone_count=self._zone_count,
+            prepare=partial(_with_tau, self._history.current.tau),
         )
         self._transfer_worker.progress.connect(self._on_transfer_progress)
         self._transfer_worker.model_ready.connect(self._on_model_ready)
@@ -360,6 +737,8 @@ class MainWindow(QMainWindow):
         """Cache the model fitted by the current preview worker."""
         if self._pending_model_key is not None:
             self._model_cache = (*self._pending_model_key, model)
+        if isinstance(model, ZoneTransferModel):
+            self._setup_zone_editor(model)
 
     def _on_grid_ready(self, result: GridResult) -> None:
         self._last_grid_result = result
@@ -391,6 +770,7 @@ class MainWindow(QMainWindow):
 
         lut_size: int = self._size_combo.currentData()
         method: str = str(self._algo_combo.currentData())
+        raw_model = self._cached_model(source, reference, self._method_key())
 
         # Disable export during processing
         self._export_btn.setEnabled(False)
@@ -408,7 +788,7 @@ class MainWindow(QMainWindow):
             title=title,
             method=method,
             params=self._adjustments.params(),
-            model=self._cached_model(source, reference, method),
+            model=None if raw_model is None else self._effective_model(raw_model),
         )
         self._export_worker.progress.connect(self._on_export_progress)
         self._export_worker.result_ready.connect(self._on_export_result)
@@ -474,4 +854,11 @@ class MainWindow(QMainWindow):
         """Ensure background threads are safely terminated before closing."""
         self.stop_workers()
         super().closeEvent(event)
+
+
+def _with_tau(tau: float, model: TransferModel) -> TransferModel:
+    """Apply the zone separation to a freshly fitted zones model."""
+    if isinstance(model, ZoneTransferModel):
+        return model.with_params(ZoneBakeParams(tau=tau))
+    return model
 

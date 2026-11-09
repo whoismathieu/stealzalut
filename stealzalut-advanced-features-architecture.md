@@ -396,6 +396,8 @@ Pour chaque paire de zones source `(i, j)`, calculer leur **recouvrement** dans 
 
 C'est l'honnêteté du produit : on montre la limite au lieu de produire un résultat bizarre sans explication.
 
+> **Décision prise en phase 2b** : l'appariement automatique ne doit pas créer lui-même de conflit. k-means coupe souvent une même masse de couleur (un feuillage) en deux zones voisines, que l'appariement envoyait vers des cibles différentes : l'avertissement s'affichait dès le chargement. `harmonize_conflicts` donne à ces paires l'union de leurs cibles, pondérée par la surface. Il ne touche que les liens automatiques : un lien réglé par l'utilisateur ou l'IA reste tel quel, et son conflit éventuel est signalé.
+
 ### 4.8. Ordre complet du pipeline
 
 ```
@@ -597,7 +599,9 @@ Tous ces réglages sont sérialisés dans `finishing` du `.szl`.
 - Glisser d'une pastille source vers une pastille référence : remplace la cible. Avec Maj : ajoute une cible.
 - Clic droit : *Verrouiller*, *Revenir à l'auto*, *Retirer une cible*.
 - **Inspecteur** de la zone sélectionnée : Force, Force luminance, Force couleur, 4 sélecteurs d'intention (−−− … +++), poids de chaque cible, `rationale` de l'IA.
-- Implémentation : `QGraphicsView`/`QGraphicsScene` dans `gui/widgets/correspondence_view.py`. Le widget émet `table_changed(CorrespondenceTable)`. Aucune logique couleur dans le widget.
+- Implémentation : `gui/widgets/correspondence_view.py`. Le widget émet `table_changed(CorrespondenceTable)`. Aucune logique couleur dans le widget : les éditions de table sont des fonctions pures de `core/correspondence.py` (`retarget`, `remove_target`, `set_target_weight`, `set_locked`, `revert_to_auto`).
+
+> **Décision prise en phase 2b** : un `QWidget` dessiné à la main (`paintEvent`) plutôt que `QGraphicsView`/`QGraphicsScene`. Avec au plus 16 + 16 pastilles, la scène n'apporte rien, et un widget simple se teste directement (géométrie et clics). L'historique Annuler/Rétablir est dans `gui/history.py` : il enregistre table + réglages + transitions, et un geste continu sur un slider compte pour une seule étape.
 
 ### 7.2. Panneau « Réglages globaux »
 

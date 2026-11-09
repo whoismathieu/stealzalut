@@ -12,7 +12,6 @@ import logging
 from pathlib import Path
 from typing import Any
 
-import cv2
 import numpy as np
 from numpy.typing import NDArray
 from PySide6.QtCore import Qt, QTimer, Signal
@@ -35,6 +34,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from stealzalut.gui.overlay import highlight_zone
 from stealzalut.utils.image_io import (
     SUPPORTED_EXTENSIONS,
     bgr_to_rgb,
@@ -89,6 +89,7 @@ class ImageDropZone(QWidget):
         self._max_preview = max_preview
         self._image_rgb: NDArray[np.uint8] | None = None
         self._image_path: Path | None = None
+        self._thumb_rgb: NDArray[np.uint8] | None = None
 
         # Accept drops
         self.setAcceptDrops(True)
@@ -167,6 +168,7 @@ class ImageDropZone(QWidget):
         """Remove the loaded image and reset to placeholder."""
         self._image_rgb = None
         self._image_path = None
+        self._thumb_rgb = None
         self._label.setPixmap(QPixmap())
         self._label.setText(self._label_text)
         self._set_path_display(None)
@@ -257,21 +259,27 @@ class ImageDropZone(QWidget):
         self._copy_btn.setText(_COPY_LABEL)
         self._path_row.show()
 
+    def set_highlight(self, mask: NDArray[np.bool_] | None) -> None:
+        """Highlight a colour zone on the thumbnail (``None`` = plain image).
+
+        Args:
+            mask: Zone mask at any resolution with the image's aspect ratio.
+        """
+        if self._thumb_rgb is None:
+            return
+        shown = self._thumb_rgb if mask is None else highlight_zone(self._thumb_rgb, mask)
+        self._show_rgb(shown)
+
     def _update_thumbnail(self, bgr_image: NDArray[np.uint8]) -> None:
         """Generate and display a thumbnail from the BGR image."""
         thumb = create_thumbnail(bgr_image, self._max_preview)
-        # Convert BGR → RGB for Qt
-        rgb = cv2.cvtColor(thumb, cv2.COLOR_BGR2RGB)
+        rgb: NDArray[np.uint8] = np.ascontiguousarray(thumb[..., ::-1])  # BGR → RGB
+        self._thumb_rgb = rgb
+        self._show_rgb(rgb)
+
+    def _show_rgb(self, rgb: NDArray[np.uint8]) -> None:
         h, w, ch = rgb.shape
-        bytes_per_line = ch * w
-        qt_image = QImage(
-            rgb.data.tobytes(),
-            w,
-            h,
-            bytes_per_line,
-            QImage.Format.Format_RGB888,
-        )
-        pixmap = QPixmap.fromImage(qt_image)
+        qt_image = QImage(rgb.data.tobytes(), w, h, ch * w, QImage.Format.Format_RGB888)
         self._label.setText("")
-        self._label.setPixmap(pixmap)
+        self._label.setPixmap(QPixmap.fromImage(qt_image))
 

@@ -56,6 +56,14 @@ _SPECS: tuple[_SliderSpec, ...] = (
         "Touche aussi un peu les oranges et beiges proches de la peau.",
     ),
     _SliderSpec(
+        "preserve_vivid",
+        "Préserver les couleurs vives",
+        1.0,
+        "Garde la teinte des couleurs déjà vives de la photo (néons, enseignes,\n"
+        "feux) : seules les zones ternes prennent la couleur de la référence.\n"
+        "Utile quand la référence n'a qu'une couleur dominante.",
+    ),
+    _SliderSpec(
         "mix",
         "Mix",
         1.0,

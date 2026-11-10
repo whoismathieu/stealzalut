@@ -208,6 +208,50 @@ def upsample_mask(mask: NDArray[np.bool_], width: int, height: int) -> NDArray[n
     return np.asarray(soft >= 0.5, dtype=np.bool_)
 
 
+#: Pixels with at least this Oklab chroma count as "coloured".
+COLOURFUL_CHROMA = 0.05
+#: Hue concentration above which an image reads as one dominant colour.
+MONOCHROME_CONCENTRATION = 0.85
+
+
+@dataclass(frozen=True, slots=True)
+class ColourStats:
+    """How varied an image's colours are.
+
+    Attributes:
+        concentration: Chroma-weighted mean resultant length of the hues of
+            coloured pixels: 1 = one single hue (a purple-graded night),
+            ~0.3–0.4 = a varied palette; 0 when the image is nearly grey.
+        colourful: Fraction of coloured pixels (chroma ≥ :data:`COLOURFUL_CHROMA`).
+        hue: Dominant hue, degrees (Oklch).
+    """
+
+    concentration: float
+    colourful: float
+    hue: float
+
+    @property
+    def is_monochrome(self) -> bool:
+        """One dominant colour: the zones method would give a uniform filter."""
+        return self.concentration >= MONOCHROME_CONCENTRATION
+
+
+def colour_stats(image_rgb: NDArray[np.uint8]) -> ColourStats:
+    """Measure how much an image's colours share a single hue."""
+    small = create_thumbnail(image_rgb, ANALYSIS_MAX_SIZE)
+    lab = srgb_to_oklab(small.reshape(-1, 3).astype(np.float64) / 255.0)
+    chroma = np.hypot(lab[:, 1], lab[:, 2])
+    coloured = chroma >= COLOURFUL_CHROMA
+    fraction = float(coloured.mean())
+    if fraction < 0.05:
+        return ColourStats(0.0, fraction, 0.0)
+    # Unit hue vectors weighted by chroma: (a, b) / C × C = (a, b)
+    a_sum, b_sum = float(lab[coloured, 1].sum()), float(lab[coloured, 2].sum())
+    resultant = float(np.hypot(a_sum, b_sum) / chroma[coloured].sum())
+    hue = float(np.degrees(np.arctan2(b_sum, a_sum)) % 360.0)
+    return ColourStats(resultant, fraction, hue)
+
+
 def analysis_id(
     source_rgb: NDArray[np.uint8],
     reference_rgb: NDArray[np.uint8],

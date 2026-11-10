@@ -232,11 +232,12 @@ class TestMainWindow:
         assert sizes == [17, 33, 64]
         assert window._size_combo.currentData() == 33
 
-        # Algorithm combo box populated with all 9 methods and default selected
-        assert window._algo_combo.count() == 9
+        # Algorithm combo box populated with all 10 methods and default selected
+        assert window._algo_combo.count() == 10
         algos = [window._algo_combo.itemData(i) for i in range(window._algo_combo.count())]
         assert "oklab" in algos
         assert "zones" in algos
+        assert "ambiance" in algos
         assert "mkl" in algos
         assert "reinhard" in algos
         assert "hm" in algos

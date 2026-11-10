@@ -55,6 +55,7 @@ class AffineTransform:
 
 SUPPORTED_METHODS: tuple[str, ...] = (
     "zones",
+    "ambiance",
     "oklab",
     "mkl",
     "reinhard",
@@ -67,6 +68,7 @@ SUPPORTED_METHODS: tuple[str, ...] = (
 
 METHOD_LABELS: dict[str, str] = {
     "zones": "Zones (correspondances par zone de couleur)",
+    "ambiance": "Ambiance (dominante par tons, références monochromes)",
     "oklab": "Oklab (luminance / couleur séparées)",
     "mkl": "Monge–Kantorovitch (MKL)",
     "reinhard": "Reinhard (Lab Stats)",
@@ -79,7 +81,11 @@ METHOD_LABELS: dict[str, str] = {
 
 
 #: Methods implemented by the ``color-matcher`` library (image-level transfer).
-COLOR_MATCHER_METHODS: frozenset[str] = frozenset(SUPPORTED_METHODS) - {"oklab", "zones"}
+COLOR_MATCHER_METHODS: frozenset[str] = frozenset(SUPPORTED_METHODS) - {
+    "oklab",
+    "zones",
+    "ambiance",
+}
 
 #: Bounds on the per-axis scaling of the Oklab transfer.  Without them a
 #: nearly uniform image (tiny variance) makes the transform explode.
@@ -611,6 +617,11 @@ def fit_transfer(
         from stealzalut.core.zone_transfer import fit_zone_transfer  # avoids an import cycle
 
         return fit_zone_transfer(source, reference)
+
+    if chosen == "ambiance":
+        from stealzalut.core.ambiance import fit_ambiance  # avoids an import cycle
+
+        return fit_ambiance(source, reference)
 
     if chosen in ("mkl", "mvgd", "default"):
         return AffineTransferModel(_fit_affine_transform(source, reference), method_name=chosen)

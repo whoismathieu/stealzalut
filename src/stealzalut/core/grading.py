@@ -56,6 +56,8 @@ SKIN_LIGHTNESS = (0.25, 0.35, 0.92, 0.98)
 
 # Near-neutral window: full protection below C = 0.02, none above C = 0.06.
 NEUTRAL_CHROMA = (0.02, 0.06)
+#: Chroma range over which a colour becomes "vivid" (neons, signs, lights).
+VIVID_CHROMA = (0.04, 0.12)
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +68,7 @@ class GradingParams:
     chroma_strength: float = 1.0
     preserve_neutrals: float = 0.0
     skin_protection: float = 0.0
+    preserve_vivid: float = 0.0
     mix: float = 1.0
     smoothing: float = 0.0
 
@@ -112,6 +115,11 @@ def neutral_mask(lch: F64) -> F64:
     return 1.0 - smoothstep(lch[:, 1], *NEUTRAL_CHROMA)
 
 
+def vivid_mask(lch: F64) -> F64:
+    """Weight in ``[0, 1]``: 1 for vivid colours (neons, signs, lights)."""
+    return smoothstep(lch[:, 1], *VIVID_CHROMA)
+
+
 def skin_mask(lch: F64) -> F64:
     """Weight in ``[0, 1]``: 1 for typical skin tones, 0 far from them."""
     hue_dist = np.abs((lch[:, 2] - SKIN_HUE_CENTER + 180.0) % 360.0 - 180.0)
@@ -136,7 +144,8 @@ def adjust_displacement(lab_in: F64, lab_target: F64, params: GradingParams) -> 
     lch_in = oklab_to_oklch(lab_in)
     keep_neutral = params.preserve_neutrals * neutral_mask(lch_in)
     keep_skin = params.skin_protection * skin_mask(lch_in)
-    delta[:, 1:] *= ((1.0 - keep_neutral) * (1.0 - keep_skin))[:, None]
+    keep_vivid = params.preserve_vivid * vivid_mask(lch_in)
+    delta[:, 1:] *= ((1.0 - keep_neutral) * (1.0 - keep_skin) * (1.0 - keep_vivid))[:, None]
 
     delta *= params.mix
     return delta

@@ -577,6 +577,23 @@ Mon logiciel a découpé chaque image en zones de couleur. Fichiers joints :
 > - Le transfert par zones plafonne à environ 75–80 % de la saturation de la référence : les tons très sombres portent peu de couleur en sRGB. Mesure sur le cas Tokyo : 0,041 de chroma moyenne contre 0,053, et 13 % de pixels très colorés contre 23 %. Avec vibrance +0,5 et saturation +0,15, on atteint 0,049 et 23 %. L'IA peut donc maintenant renseigner `finishing.saturation` et `finishing.vibrance`, et rien d'autre : les roues et la courbe restent à l'utilisateur.
 > - La finition d'une recette est **fusionnée** (`merge_finishing`) : seuls les réglages présents dans la recette remplacent ceux en cours. Une recette exportée par l'application contient tout et remplace donc tout.
 
+### 5.4 bis. Mode Ambiance (références monochromes)
+
+Ajouté après un essai avec une référence presque monochrome : une nuit violette avec un lampadaire, une rue de Tokyo comme source. La concentration des teintes (moyenne pondérée des vecteurs de teinte, 1 = une seule teinte) vaut **0,99** pour cette référence et 0,36 pour la source. Sept zones de référence sur huit étaient violettes ou quasi noires. Le transfert par zones copie la *palette* de la référence : toutes les cibles étant violettes, le rendu ne pouvait être qu'un filtre violet uniforme (concentration 0,97), quels que soient les choix de l'IA.
+
+Un coloriste lit une telle référence comme une **dominante par tons**. `core/ambiance.py` fait de même :
+- la luminosité suit le transfert global Oklab (le ton de la référence) ;
+- une **courbe couleur selon la luminosité** est lue sur la référence : couleur moyenne à chaque niveau de L (moyenne à noyau gaussien de largeur 0,05, tirée vers la moyenne globale là où la référence a peu de pixels). Les ombres prennent ainsi la couleur que la référence a dans ses ombres, et les lumières celle de ses lumières (ici, blanc chaud). Trois teintes fixes par quantiles avaient d'abord été essayées : la teinte des ombres était calée sur le sol presque noir, et le violet, qui vit dans les tons sombres à moyens, disparaissait ;
+- cette teinte est **ajoutée** aux couleurs de la source, atténuées de 35 % seulement, au lieu de les remplacer ;
+- les couleurs vives de la source (chroma de 0,04 à 0,12 et au-delà) sont protégées à 80 % : les néons et les enseignes gardent leur teinte.
+
+Sur le cas violet : ambiance violette franche, néons rouges, jaunes et verts conservés, lumières chaudes. Sur Tokyo (concentration 0,40), le mode est trop discret et les Zones restent meilleures : les deux modes sont complémentaires.
+
+Autour du mode :
+- `palette.colour_stats` mesure la concentration, la part de pixels colorés et la teinte dominante. Au-dessus de 0,85, la référence est jugée monochrome. Un bandeau propose alors « Passer en Ambiance » (masquable), en nommant la dominante (« dominante violette »).
+- `analysis.json` donne `hue_concentration`, `colourful_pct`, `dominant_hue` et `monochrome` pour les deux images, ainsi qu'un `suggested_mode`. Le prompt explique les deux modes et indique celui qui convient à cette référence. Les recettes ont un champ `mode` (`zones` | `ambiance`) ; une recette en mode Ambiance bascule la méthode et n'applique que `global` et `finishing`.
+- Nouveau réglage global **« Préserver les couleurs vives »** (`preserve_vivid`), dans tous les modes : il fait pour les couleurs vives ce que « Préserver les neutres » fait pour les gris.
+
 ### 5.5. Variante sans pack (« profil de look »)
 
 Le client peut aussi vouloir réutiliser une référence sans l'image. Bouton **« Sauver le look »** → `.szlook` = zones référence (moments Oklab, surfaces, hex) + vignette basse résolution. Charger un `.szlook` remplace l'image de référence dans le modèle. Utile pour se constituer une bibliothèque de looks. Priorité basse.

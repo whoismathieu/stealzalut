@@ -33,6 +33,8 @@ from stealzalut.core.grading import GradingParams
 RECIPE_FORMAT = "stealzalut.recipe"
 RECIPE_VERSION = 2
 RECIPE_SUFFIX = ".szl"
+#: Transfer modes a recipe can ask for.
+RECIPE_MODES = ("zones", "ambiance")
 
 STRENGTH_WORDS: dict[str, float] = {
     "off": 0.0,
@@ -96,6 +98,8 @@ class Recipe:
     #: Finishing settings the recipe actually gives (an AI only gives
     #: saturation / vibrance; the user's wheels and curve must survive).
     finishing_keys: frozenset[str] = frozenset()
+    #: "zones" or "ambiance" (``None``: not given, stay in the current mode).
+    mode: str | None = None
 
 
 # ── Reading ──────────────────────────────────────────────────────────────────
@@ -154,6 +158,9 @@ def parse_recipe(source: str | dict[str, Any]) -> Recipe:
         )
 
     analysis = data.get("analysis_id")
+    mode = data.get("mode")
+    if mode is not None and mode not in RECIPE_MODES:
+        raise RecipeError(f"« mode » : « {mode} » inconnu (valeurs possibles : zones | ambiance).")
     zone_count = data.get("zone_count")
     if zone_count is not None and (not _is_number(zone_count) or int(zone_count) != zone_count):
         raise RecipeError(f"zone_count : {zone_count!r} doit être un nombre entier.")
@@ -180,6 +187,7 @@ def parse_recipe(source: str | dict[str, Any]) -> Recipe:
         links=links,
         finishing=_parse_finishing(data.get("finishing")),
         finishing_keys=_finishing_keys(data.get("finishing")),
+        mode=mode,
     )
 
 
@@ -545,6 +553,7 @@ def recipe_to_dict(
         "format": RECIPE_FORMAT,
         "version": RECIPE_VERSION,
         "analysis_id": analysis_id,
+        "mode": "zones",
         "zone_count": zone_count,
         "name": name,
         "description": description,

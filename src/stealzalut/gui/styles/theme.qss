@@ -459,3 +459,34 @@ QMenu::item:disabled {
     border-color: #4f80ff;
     color: #ffffff;
 }
+
+/* ── Monochrome reference hint ─────────────────────────────────────────────── */
+#modeHintBar {
+    background-color: #1c2740;
+    border-left: 3px solid #4f80ff;
+    border-radius: 4px;
+}
+
+#modeHintLabel {
+    color: #c9d6f2;
+}
+
+#modeHintButton {
+    background-color: #4f80ff;
+    border: none;
+    border-radius: 4px;
+    color: #ffffff;
+    padding: 5px 12px;
+    font-weight: 600;
+}
+
+#modeHintButton:hover {
+    background-color: #6a94ff;
+}
+
+#modeHintClose {
+    color: #9da5b4;
+    background: transparent;
+    border: none;
+    padding: 2px 6px;
+}

@@ -26,7 +26,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from stealzalut.core.colorspace import oklab_to_oklch
-from stealzalut.core.palette import ZonePalette, upsample_mask
+from stealzalut.core.palette import ColourStats, ZonePalette, upsample_mask
 from stealzalut.core.recipe import RECIPE_FORMAT, RECIPE_VERSION
 from stealzalut.core.zone_transfer import ZoneTransferModel
 from stealzalut.utils.image_io import create_thumbnail
@@ -80,6 +80,23 @@ def _zones_json(palette: ZonePalette) -> list[dict[str, Any]]:
     return zones
 
 
+def _colours_json(stats: ColourStats | None) -> dict[str, Any]:
+    if stats is None:
+        return {}
+    return {
+        "hue_concentration": round(stats.concentration, 2),
+        "colourful_pct": round(stats.colourful * 100.0, 1),
+        "dominant_hue": round(stats.hue, 1),
+        "monochrome": stats.is_monochrome,
+    }
+
+
+def suggested_mode(model: ZoneTransferModel) -> str:
+    """``"ambiance"`` for a reference with one dominant colour, else ``"zones"``."""
+    stats = model.reference_colours
+    return "ambiance" if stats is not None and stats.is_monochrome else "zones"
+
+
 def analysis_dict(
     model: ZoneTransferModel,
     source_size: tuple[int, int],
@@ -99,8 +116,17 @@ def analysis_dict(
         "version": ANALYSIS_VERSION,
         "analysis_id": model.analysis_id,
         "zone_count": zone_count,
-        "source": {"size": list(source_size), "zones": _zones_json(model.source)},
-        "reference": {"size": list(reference_size), "zones": _zones_json(model.reference)},
+        "suggested_mode": suggested_mode(model),
+        "source": {
+            "size": list(source_size),
+            **_colours_json(model.source_colours),
+            "zones": _zones_json(model.source),
+        },
+        "reference": {
+            "size": list(reference_size),
+            **_colours_json(model.reference_colours),
+            "zones": _zones_json(model.reference),
+        },
         "auto_matching": [
             {
                 "source_zone": link.source_zone,
@@ -273,6 +299,22 @@ Mon logiciel a découpé chaque image en zones de couleur. Fichiers joints :
 4. Ajuste avec des intentions qualitatives si besoin (plus chaud, moins saturé…).
 5. Corrige l'auto_matching seulement là où il est mauvais.
 
+## D'abord, choisis le mode : "zones" ou "ambiance"
+{mode_note}
+- "zones" : chaque zone source prend la couleur d'une ou plusieurs zones de la
+  référence. Idéal quand la référence a une vraie palette (plusieurs couleurs
+  qui jouent des rôles : ciel, peau, feuillage, enseignes…).
+- "ambiance" : la référence est lue comme une dominante par tons (sa couleur
+  dans les ombres, les tons moyens, les lumières), AJOUTÉE aux couleurs de la
+  photo ; les couleurs vives de la photo (néons, enseignes, feux) gardent leur
+  teinte. Idéal quand la référence est dominée par UNE couleur
+  (reference.monochrome = true, hue_concentration ≥ 0.85) : en mode zones,
+  toutes les cibles auraient cette couleur et la photo deviendrait un filtre
+  uniforme.
+- En mode "ambiance", "links" est ignoré (mets []) : seuls "global" et
+  "finishing" comptent. global.chroma_strength dose la dominante,
+  global.preserve_vivid (0–1) protège davantage les couleurs vives.
+
 ## Dosage : les forces se MULTIPLIENT
 La couleur reçue par une zone = strength × global.chroma_strength × global.mix,
 puis preserve_neutrals en retire encore une part sur les tons peu saturés.
@@ -317,9 +359,10 @@ le look disparaît presque. Donc :
 
 ```json
 {{ "format": "{recipe_format}", "version": {recipe_version}, "analysis_id": "{analysis_id}",
-  "name": "...", "description": "...",
+  "mode": "zones|ambiance", "name": "...", "description": "...",
   "global": {{ "luminance_strength": 1.0, "chroma_strength": 1.0,
-              "preserve_neutrals": 0.0, "skin_protection": 0.0-1.0,
+              "preserve_neutrals": 0.0, "preserve_vivid": 0.0-1.0,
+              "skin_protection": 0.0-1.0,
               "zone_separation": "sharp|medium|soft", "mix": 1.0 }},
   "links": [ {{ "source_zone": 1, "targets": {{ "2": 0.7, "4": 0.3 }},
                "strength": "full", "intent": {{ "warmth": "+small" }},
@@ -334,6 +377,22 @@ def _ids(prefix: str, palette: ZonePalette) -> str:
     return ", ".join(f"{prefix}{zone.id}" for zone in palette.zones)
 
 
+def _mode_note(model: ZoneTransferModel) -> str:
+    stats = model.reference_colours
+    if stats is None:
+        return ""
+    if stats.is_monochrome:
+        return (
+            f"ICI : la référence est dominée par une seule couleur "
+            f"(hue_concentration = {stats.concentration:.2f}) : le mode \"ambiance\" est "
+            "presque toujours le bon choix."
+        )
+    return (
+        f"ICI : la référence a une palette variée (hue_concentration = "
+        f"{stats.concentration:.2f}) : le mode \"zones\" est en général le bon choix."
+    )
+
+
 def build_prompt(model: ZoneTransferModel) -> str:
     """``PROMPT.md`` for this analysis (ids and analysis id filled in)."""
     return _PROMPT.format(
@@ -342,6 +401,7 @@ def build_prompt(model: ZoneTransferModel) -> str:
         recipe_format=RECIPE_FORMAT,
         recipe_version=RECIPE_VERSION,
         analysis_id=model.analysis_id,
+        mode_note=_mode_note(model),
     )
 
 

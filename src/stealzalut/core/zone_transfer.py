@@ -41,10 +41,12 @@ from stealzalut.core.correspondence import CorrespondenceTable, Level, Link
 from stealzalut.core.matching import match_zones
 from stealzalut.core.palette import (
     DEFAULT_ZONE_COUNT,
+    ColourStats,
     Zone,
     ZonePalette,
     analysis_id,
     analyze_zones,
+    colour_stats,
 )
 
 F64 = NDArray[np.float64]
@@ -108,6 +110,9 @@ class ZoneTransferModel(TransferModel):
     params: ZoneBakeParams = ZoneBakeParams()
     #: Fingerprint of the analysis (see :func:`~stealzalut.core.palette.analysis_id`).
     analysis_id: str = ""
+    #: Colour variety of both images (a monochrome reference suits "ambiance").
+    source_colours: ColourStats | None = None
+    reference_colours: ColourStats | None = None
 
     @property
     def method(self) -> str:
@@ -323,6 +328,8 @@ def fit_zone_transfer(
         global_model=global_model,
         params=params or ZoneBakeParams(),
         analysis_id=analysis_id(source, reference, zone_count),
+        source_colours=colour_stats(source),
+        reference_colours=colour_stats(reference),
     )
     return model.with_table(harmonize_conflicts(model))
 

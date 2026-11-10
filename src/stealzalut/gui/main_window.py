@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
     QSplitter,
     QStatusBar,
     QTabWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -47,7 +48,13 @@ from stealzalut.core.color_transfer import METHOD_LABELS, TransferModel
 from stealzalut.core.correspondence import CorrespondenceTable, Link
 from stealzalut.core.grading import GridResult
 from stealzalut.core.lut_engine import VALID_LUT_SIZES
-from stealzalut.core.palette import DEFAULT_ZONE_COUNT, MAX_ZONE_COUNT, MIN_ZONE_COUNT
+from stealzalut.core.palette import (
+    DEFAULT_ZONE_COUNT,
+    MAX_ZONE_COUNT,
+    MIN_ZONE_COUNT,
+    ColourStats,
+    colour_stats,
+)
 from stealzalut.core.recipe import (
     LOW_COLOUR_DOSE,
     RECIPE_SUFFIX,
@@ -76,6 +83,7 @@ from stealzalut.gui.widgets.image_drop_zone import ImageDropZone
 from stealzalut.gui.widgets.paste_recipe_dialog import PasteRecipeDialog
 from stealzalut.gui.widgets.preview_panel import PreviewPanel
 from stealzalut.gui.widgets.zone_inspector import ZoneInspector
+from stealzalut.gui.zone_text import dominant_colour_name
 from stealzalut.workers.export_worker import ExportWorker
 from stealzalut.workers.transfer_worker import TransferWorker
 
@@ -126,6 +134,9 @@ class MainWindow(QMainWindow):
         self._zone_count = DEFAULT_ZONE_COUNT
         # Recipe waiting for a re-analysis with its zone count
         self._pending_recipe: Recipe | None = None
+        # Colour variety of the reference (suggests the ambiance mode)
+        self._reference_colours: ColourStats | None = None
+        self._mode_hint_dismissed = False
         # Message kept in the status bar when the next preview arrives
         self._status_note = ""
 
@@ -212,6 +223,8 @@ class MainWindow(QMainWindow):
         )
         self._main_splitter.addWidget(self._bottom_tabs)
         self._main_splitter.setSizes([300, 360, 250])
+        self._mode_hint = self._build_mode_hint()
+        root_layout.addWidget(self._mode_hint)
         root_layout.addWidget(self._main_splitter, stretch=1)
 
         # ── Middle: Controls (Algorithm + LUT size + Export button) ─
@@ -409,6 +422,7 @@ class MainWindow(QMainWindow):
         # Image loading → auto-preview
         self._source_zone.image_loaded.connect(self._on_image_changed)
         self._reference_zone.image_loaded.connect(self._on_image_changed)
+        self._reference_zone.image_loaded.connect(self._on_reference_loaded)
 
         # Image cleared
         self._source_zone.image_cleared.connect(self._on_image_cleared)
@@ -461,6 +475,7 @@ class MainWindow(QMainWindow):
         self._current_method = method
         self._drop_zone_editor()
         self._update_zone_panel_visibility()
+        self._update_mode_hint()
         self._refresh_preview_if_ready()
 
     def _on_size_changed(self, _index: int) -> None:
@@ -490,6 +505,7 @@ class MainWindow(QMainWindow):
 
     def _on_image_cleared(self) -> None:
         """Called when an image is removed."""
+        self._update_mode_hint()
         self._model_cache = None
         self._drop_zone_editor()
         self._update_export_button_state()
@@ -647,6 +663,8 @@ class MainWindow(QMainWindow):
         Returns:
             ``True`` if applied (or scheduled after a re-analysis).
         """
+        if recipe.mode == "ambiance":
+            return self._apply_ambiance_recipe(recipe)
         model = self._zone_model
         if model is None:
             return False
@@ -697,6 +715,78 @@ class MainWindow(QMainWindow):
         self._status_note = f"{note} {recipe.description}".strip()
         self._status_bar.showMessage(self._status_note)
         return True
+
+    def _apply_ambiance_recipe(self, recipe: Recipe) -> bool:
+        """A recipe asking for the ambiance mode: switch, then apply its settings."""
+        self._algo_combo.setCurrentIndex(self._algo_combo.findData("ambiance"))
+        if self._current_method != "ambiance":  # switch refused (hand-edited links)
+            return False
+        current = self._history.current
+        params, tau = apply_global(recipe, current.params, current.tau)
+        state = EditState(None, params, tau, merge_finishing(recipe, current.finishing))
+        if self._history.push(state):
+            self._restore(state)
+        title = f"« {recipe.name} »" if recipe.name else "importée"
+        note = (
+            f"Recette {title} appliquée en mode Ambiance : la référence est lue comme une "
+            "dominante par tons, les couleurs vives de la photo sont gardées."
+        )
+        self._status_note = f"{note} {recipe.description}".strip()
+        self._status_bar.showMessage(self._status_note)
+        return True
+
+    # ── Monochrome reference hint ────────────────────────────────────────
+
+    def _build_mode_hint(self) -> QFrame:
+        """Banner suggesting the ambiance mode for a one-colour reference."""
+        bar = QFrame()
+        bar.setObjectName("modeHintBar")
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(10, 6, 6, 6)
+        self._mode_hint_label = QLabel()
+        self._mode_hint_label.setObjectName("modeHintLabel")
+        self._mode_hint_label.setWordWrap(True)
+        layout.addWidget(self._mode_hint_label, stretch=1)
+        self._mode_hint_btn = QPushButton("Passer en Ambiance")
+        self._mode_hint_btn.setObjectName("modeHintButton")
+        self._mode_hint_btn.clicked.connect(
+            lambda: self._algo_combo.setCurrentIndex(self._algo_combo.findData("ambiance"))
+        )
+        layout.addWidget(self._mode_hint_btn)
+        close = QToolButton()
+        close.setText("×")
+        close.setObjectName("modeHintClose")
+        close.setToolTip("Masquer")
+        close.clicked.connect(self._dismiss_mode_hint)
+        layout.addWidget(close)
+        bar.hide()
+        return bar
+
+    def _on_reference_loaded(self, image: Any) -> None:
+        self._reference_colours = colour_stats(image)
+        self._mode_hint_dismissed = False
+        self._update_mode_hint()
+
+    def _dismiss_mode_hint(self) -> None:
+        self._mode_hint_dismissed = True
+        self._update_mode_hint()
+
+    def _update_mode_hint(self) -> None:
+        stats = self._reference_colours if self._reference_zone.has_image else None
+        show = (
+            stats is not None
+            and stats.is_monochrome
+            and self._current_method != "ambiance"
+            and not self._mode_hint_dismissed
+        )
+        if show and stats is not None:
+            self._mode_hint_label.setText(
+                f"La référence est dominée par une seule couleur ({dominant_colour_name(stats.hue)}"
+                "). Avec cette méthode, toute la photo prendrait cette couleur, comme un filtre. "
+                "Le mode Ambiance l'ajoute comme une dominante par tons et garde la couleur "
+                "des néons, enseignes et lumières."
+            )
+        self._mode_hint.setVisible(show)
 
     def _ask_low_dose(self, dose: float, table: CorrespondenceTable, params: Any) -> bool:
         """Offer to raise a weak recipe to full dose; ``True`` = raise it."""

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from stealzalut.core.correspondence import LEVELS, Intent, Level, Link, Origin
+from stealzalut.core.finishing import BANDS
 from stealzalut.core.palette import Zone
 
 #: (Intent field, label, wording for "+", wording for "-")
@@ -83,3 +84,25 @@ def source_tooltip(zone: Zone, link: Link) -> str:
 def reference_tooltip(zone: Zone, used_by: list[int]) -> str:
     users = ", ".join(f"S{z}" for z in used_by) if used_by else "aucune zone source"
     return f"R{zone.id} — {pct(zone.area)} de la référence\nUtilisée par : {users}"
+
+
+_COLOUR_ADJECTIVES = {
+    "Rouges": "rouge",
+    "Oranges": "orange",
+    "Jaunes": "jaune",
+    "Verts": "verte",
+    "Cyans": "cyan",
+    "Bleus": "bleue",
+    "Violets": "violette",
+    "Magentas": "magenta",
+}
+
+
+def dominant_colour_name(hue: float) -> str:
+    """``"dominante violette"`` for an Oklch hue in degrees."""
+
+    def distance(center: float) -> float:
+        return abs((hue - center + 180.0) % 360.0 - 180.0)
+
+    name = min(BANDS, key=lambda band: distance(band[1]))[0]
+    return f"dominante {_COLOUR_ADJECTIVES[name]}"

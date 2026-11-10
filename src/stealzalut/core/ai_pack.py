@@ -4,9 +4,11 @@ The app measures; the user's AI reasons about *what* each zone is and
 which reference zone should colour it.  The pack gives the AI everything
 it needs, in a folder (plus a ``.zip`` of it):
 
-* ``1_source_zones.png`` / ``2_reference_zones.png`` — one tile per zone,
+* ``1_source.jpg`` / ``2_reference.jpg`` — both images as they are (only
+  resized), so the AI judges the real mood and colours;
+* ``3_source_zones.png`` / ``4_reference_zones.png`` — one tile per zone,
   the zone in colour, the rest greyed, labelled ``S1``… / ``R1``…;
-* ``3_source_overview.png`` / ``4_reference_overview.png`` — whole image,
+* ``5_source_overview.png`` / ``6_reference_overview.png`` — whole image,
   zone outlines and labels;
 * ``analysis.json`` — exact measurements and the automatic matching;
 * ``PROMPT.md`` — the prompt to paste, asking for a ``.szl`` recipe.
@@ -35,6 +37,10 @@ ANALYSIS_FORMAT = "stealzalut.analysis"
 ANALYSIS_VERSION = 1
 #: Longest edge of every image of the pack.
 PACK_MAX_SIZE = 1024
+#: Longest edge of the clean source / reference images (enough detail
+#: to judge the mood, light enough to upload).
+ORIGINAL_MAX_SIZE = 1600
+ORIGINAL_JPEG_QUALITY = 90
 TILE_SIZE = 240
 _TILE_GAP = 8
 _LABEL_H = 34
@@ -42,10 +48,12 @@ _SHEET_BG = (22, 22, 26)
 _FONT = cv2.FONT_HERSHEY_SIMPLEX
 
 PACK_FILES = (
-    "1_source_zones.png",
-    "2_reference_zones.png",
-    "3_source_overview.png",
-    "4_reference_overview.png",
+    "1_source.jpg",
+    "2_reference.jpg",
+    "3_source_zones.png",
+    "4_reference_zones.png",
+    "5_source_overview.png",
+    "6_reference_overview.png",
     "analysis.json",
     "PROMPT.md",
 )
@@ -284,9 +292,14 @@ Tu es étalonneur (coloriste) cinéma. Je veux donner à ma photo SOURCE l'ambia
 colorimétrique de ma photo RÉFÉRENCE, même si elles ne montrent pas la même chose.
 
 Mon logiciel a découpé chaque image en zones de couleur. Fichiers joints :
-- 1_source_zones.png : chaque zone de la source isolée, nommée {source_ids}.
-- 2_reference_zones.png : chaque zone de la référence, nommée {reference_ids}.
-- 3_source_overview.png et 4_reference_overview.png : les images entières, zones entourées.
+- 1_source.jpg et 2_reference.jpg : les deux photos TELLES QUELLES (seulement
+  réduites). C'est sur elles que tu juges l'ambiance, la lumière et les vraies
+  couleurs ; les autres images sont retouchées pour repérer les zones.
+- 3_source_zones.png : chaque zone de la source isolée (le reste grisé),
+  nommée {source_ids}.
+- 4_reference_zones.png : idem pour la référence, zones {reference_ids}.
+- 5_source_overview.png et 6_reference_overview.png : les images entières
+  assombries, zones entourées et étiquetées (pour situer chaque zone).
 - analysis.json : mesures exactes et proposition automatique (auto_matching).
 
 ## Ta mission
@@ -416,6 +429,26 @@ def _write_png(path: Path, image_rgb: NDArray[np.uint8]) -> None:
     path.write_bytes(data.tobytes())
 
 
+def _write_jpeg(path: Path, image_rgb: NDArray[np.uint8]) -> None:
+    ok, data = cv2.imencode(
+        ".jpg",
+        cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR),
+        [cv2.IMWRITE_JPEG_QUALITY, ORIGINAL_JPEG_QUALITY],
+    )
+    if not ok:
+        raise OSError(f"Impossible d'encoder {path.name}")
+    path.write_bytes(data.tobytes())
+
+
+#: Files of packs written by earlier versions (removed when a pack is rewritten).
+_LEGACY_PACK_FILES = (
+    "1_source_zones.png",
+    "2_reference_zones.png",
+    "3_source_overview.png",
+    "4_reference_overview.png",
+)
+
+
 def write_pack(
     destination: Path,
     name: str,
@@ -440,10 +473,16 @@ def write_pack(
     folder = destination / f"{name}_stealzalut_pack"
     folder.mkdir(parents=True, exist_ok=True)
 
-    _write_png(folder / PACK_FILES[0], zone_sheet(source_rgb, model.source, "S"))
-    _write_png(folder / PACK_FILES[1], zone_sheet(reference_rgb, model.reference, "R"))
-    _write_png(folder / PACK_FILES[2], zone_overview(source_rgb, model.source, "S"))
-    _write_png(folder / PACK_FILES[3], zone_overview(reference_rgb, model.reference, "R"))
+    # Old file names would end up in the zip next to the new ones
+    for stale in _LEGACY_PACK_FILES:
+        (folder / stale).unlink(missing_ok=True)
+
+    _write_jpeg(folder / PACK_FILES[0], create_thumbnail(source_rgb, ORIGINAL_MAX_SIZE))
+    _write_jpeg(folder / PACK_FILES[1], create_thumbnail(reference_rgb, ORIGINAL_MAX_SIZE))
+    _write_png(folder / PACK_FILES[2], zone_sheet(source_rgb, model.source, "S"))
+    _write_png(folder / PACK_FILES[3], zone_sheet(reference_rgb, model.reference, "R"))
+    _write_png(folder / PACK_FILES[4], zone_overview(source_rgb, model.source, "S"))
+    _write_png(folder / PACK_FILES[5], zone_overview(reference_rgb, model.reference, "R"))
 
     analysis = analysis_dict(
         model,
@@ -451,10 +490,10 @@ def write_pack(
         (int(reference_rgb.shape[1]), int(reference_rgb.shape[0])),
         zone_count,
     )
-    (folder / PACK_FILES[4]).write_text(
+    (folder / PACK_FILES[6]).write_text(
         json.dumps(analysis, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
-    (folder / PACK_FILES[5]).write_text(build_prompt(model), encoding="utf-8")
+    (folder / PACK_FILES[7]).write_text(build_prompt(model), encoding="utf-8")
 
     shutil.make_archive(str(folder), "zip", root_dir=folder)
     return folder

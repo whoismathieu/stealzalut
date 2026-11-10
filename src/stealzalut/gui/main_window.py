@@ -595,7 +595,8 @@ class MainWindow(QMainWindow):
         box.setText(f"Pack créé dans :\n{folder}\n(et une copie .zip à côté)")
         box.setInformativeText(
             "1. Ouvre ton IA (Claude, ChatGPT, Gemini…).\n"
-            "2. Joins les 4 images et analysis.json (ou le .zip).\n"
+            "2. Joins les 6 images et analysis.json (ou le .zip) : les deux premières sont\n"
+            "   tes photos telles quelles, pour que l'IA juge leur vraie ambiance.\n"
             "3. Colle le prompt : il est déjà dans ton presse-papiers (copie dans PROMPT.md).\n"
             "4. Copie toute sa réponse, puis ici : Importer › Coller la réponse de l'IA."
         )

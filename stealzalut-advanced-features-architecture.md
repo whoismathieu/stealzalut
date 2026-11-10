@@ -561,6 +561,8 @@ Mon logiciel a découpé chaque image en zones de couleur. Fichiers joints :
 ```
 ````
 
+> **Images d'origine dans le pack** (ajout ultérieur) : l'IA ne voyait les photos qu'à travers les planches (zones isolées, reste grisé) et les vues d'ensemble (assombries de 40 % et couvertes de contours). Elle jugeait donc l'ambiance sur des images dégradées. Le pack commence maintenant par `1_source.jpg` et `2_reference.jpg`, telles quelles (réduites à 1600 px au plus, JPEG qualité 90, quelques centaines de Ko). Les autres fichiers deviennent 3 à 6, et le prompt précise que l'ambiance se juge sur les deux premières. Réécrire un pack supprime les fichiers nommés selon l'ancienne numérotation, pour qu'ils ne se retrouvent pas dans le zip.
+
 > **Décisions prises en phase 3** :
 > - Le prompt est un modèle dans `core/ai_pack.py` et non un fichier `assets/prompts/PROMPT.md`. L'application le remplit pour chaque pack, avec l'`analysis_id` et la liste exacte des zones (`S1, S2…`, `R1, R2…`), et le copie dans le presse-papiers. Aucun fichier à embarquer dans l'installeur. Il nomme aussi les quatre intentions possibles (`lightness`, `saturation`, `warmth`, `tint`).
 > - `analysis.json` et les recettes portent `zone_count` (le K demandé). Pour une recette d'une autre analyse, l'application propose « Recalculer avec K zones » si ce K diffère, « Appliquer quand même » (les identifiants restent vérifiés) ou « Annuler ».

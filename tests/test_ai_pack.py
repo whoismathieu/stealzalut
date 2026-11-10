@@ -84,12 +84,27 @@ def test_write_pack_with_non_ascii_path(tmp_path: Path, model: ZoneTransferModel
     assert folder.name == "forêt_x_plage_stealzalut_pack"
     assert sorted(p.name for p in folder.iterdir()) == sorted(PACK_FILES)
     image = cv2.imdecode(np.fromfile(folder / PACK_FILES[0], np.uint8), cv2.IMREAD_COLOR)
-    assert image is not None
+    assert image is not None and image.shape[:2] == SOURCE.shape[:2]  # untouched size
+    original = cv2.cvtColor(image, cv2.COLOR_BGR2RGB).astype(int)
+    assert np.abs(original - SOURCE.astype(int)).mean() < 3  # untouched colours
+    sheet = cv2.imdecode(np.fromfile(folder / PACK_FILES[2], np.uint8), cv2.IMREAD_COLOR)
+    assert sheet is not None
     analysis = json.loads((folder / "analysis.json").read_text(encoding="utf-8"))
     assert analysis["analysis_id"] == model.analysis_id
 
     with zipfile.ZipFile(folder.with_suffix(".zip")) as archive:
         assert sorted(archive.namelist()) == sorted(PACK_FILES)
 
-    # Writing again (same analysis) overwrites cleanly
+    # Writing again (same analysis) overwrites cleanly, old file names included
+    (folder / "1_source_zones.png").write_bytes(b"old pack")
     assert write_pack(destination, "forêt_x_plage", SOURCE, REFERENCE, model, 4) == folder
+    assert sorted(p.name for p in folder.iterdir()) == sorted(PACK_FILES)
+
+
+def test_large_originals_are_resized(tmp_path: Path, model: ZoneTransferModel) -> None:
+    from stealzalut.core.ai_pack import ORIGINAL_MAX_SIZE
+
+    big = cv2.resize(REFERENCE, (3000, 600), interpolation=cv2.INTER_NEAREST)
+    folder = write_pack(tmp_path, "grand", SOURCE, big, model, 4)
+    image = cv2.imdecode(np.fromfile(folder / PACK_FILES[1], np.uint8), cv2.IMREAD_COLOR)
+    assert max(image.shape[:2]) == ORIGINAL_MAX_SIZE

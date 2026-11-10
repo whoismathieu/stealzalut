@@ -1,0 +1,38 @@
+## Corrections de l'auto_matching (extrait du texte libre de la réponse)
+
+Les autres liens (S1, S2) sont gardés ou à peine retouchés.
+
+```json
+{ "format": "stealzalut.recipe", "version": 2, "analysis_id": "262be4c2",
+  "name": "Shinjuku Green Dusk",
+  "description": "Ombres et médiums tirés vers le vert crépusculaire de la référence, hautes lumières en split-tone mauve/rosé, néons rouges et blancs des enseignes préservés. Emprunt surtout chromatique, contraste de la source conservé.",
+  "global": { "luminance_strength": 0.35, "chroma_strength": 0.75,
+              "preserve_neutrals": 0.25, "skin_protection": 0.6,
+              "zone_separation": "soft", "mix": 0.85 },
+  "links": [
+    { "source_zone": 1, "targets": { "1": 0.85, "3": 0.15 },
+      "strength": "strong", "intent": { "saturation": "-small" },
+      "rationale": "Noirs profonds." },
+    { "source_zone": 2, "targets": { "2": 1.0 },
+      "strength": "strong",
+      "rationale": "Ombres principales." },
+    { "source_zone": 3, "targets": { "2": 0.6, "4": 0.4 },
+      "strength": "medium",
+      "rationale": "Devantures." },
+    { "source_zone": 4, "targets": { "4": 0.55, "5": 0.3, "7": 0.15 },
+      "strength": "medium", "intent": { "saturation": "-small" },
+      "rationale": "Asphalte." },
+    { "source_zone": 5, "targets": { "7": 0.4, "8": 0.4, "5": 0.2 },
+      "strength": "medium",
+      "rationale": "Halos." },
+    { "source_zone": 6, "targets": { "6": 1.0 },
+      "strength": "subtle", "intent": { "saturation": "0", "lightness": "0" },
+      "rationale": "Néons." },
+    { "source_zone": 7, "targets": { "8": 0.8, "7": 0.2 },
+      "strength": "medium", "intent": { "warmth": "+small" },
+      "rationale": "Vitrines." },
+    { "source_zone": 8, "keep": true,
+      "rationale": "Blancs." }
+  ],
+  "finishing": null }
+```

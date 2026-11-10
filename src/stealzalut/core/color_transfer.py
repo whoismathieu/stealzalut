@@ -54,6 +54,7 @@ class AffineTransform:
 # ── Method definitions ───────────────────────────────────────────────────────
 
 SUPPORTED_METHODS: tuple[str, ...] = (
+    "look",
     "zones",
     "ambiance",
     "oklab",
@@ -67,6 +68,7 @@ SUPPORTED_METHODS: tuple[str, ...] = (
 )
 
 METHOD_LABELS: dict[str, str] = {
+    "look": "Rendu (tons, dominantes et séparation de la référence)",
     "zones": "Zones (correspondances par zone de couleur)",
     "ambiance": "Ambiance (dominante par tons, références monochromes)",
     "oklab": "Oklab (luminance / couleur séparées)",
@@ -82,6 +84,7 @@ METHOD_LABELS: dict[str, str] = {
 
 #: Methods implemented by the ``color-matcher`` library (image-level transfer).
 COLOR_MATCHER_METHODS: frozenset[str] = frozenset(SUPPORTED_METHODS) - {
+    "look",
     "oklab",
     "zones",
     "ambiance",
@@ -612,6 +615,11 @@ def fit_transfer(
     chosen = method.lower()
     if chosen == "oklab":
         return _fit_oklab(source, reference)
+
+    if chosen == "look":
+        from stealzalut.core.look import fit_look  # avoids an import cycle
+
+        return fit_look(source, reference)
 
     if chosen == "zones":
         from stealzalut.core.zone_transfer import fit_zone_transfer  # avoids an import cycle

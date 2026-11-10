@@ -273,6 +273,37 @@ Mon logiciel a découpé chaque image en zones de couleur. Fichiers joints :
 4. Ajuste avec des intentions qualitatives si besoin (plus chaud, moins saturé…).
 5. Corrige l'auto_matching seulement là où il est mauvais.
 
+## Dosage : les forces se MULTIPLIENT
+La couleur reçue par une zone = strength × global.chroma_strength × global.mix,
+puis preserve_neutrals en retire encore une part sur les tons peu saturés.
+Exemple : "medium" (60 %) × chroma_strength 0.75 × mix 0.85 ≈ 38 % seulement :
+le look disparaît presque. Donc :
+- La valeur normale est le PLEIN effet : strength "full", chroma_strength 1.0,
+  mix 1.0. Ne baisse que là où c'est voulu (une zone précise à adoucir), jamais
+  partout « par prudence ».
+- Barème de strength : off = 0 %, subtle = 30 %, medium = 60 %, strong = 85 %,
+  full = 100 %.
+- preserve_neutrals : laisse-le à 0 en général. Sur une photo peu saturée il
+  bride presque tout l'effet. Pour protéger des blancs ou des gris précis,
+  utilise plutôt "keep": true sur leur zone.
+
+## Luminosité et intensité du look
+- global.luminance_strength = part de la luminosité et du contraste de la
+  référence que prend la photo (1.0 = toute). C'est une grande partie de
+  l'intensité d'un look : une référence sombre et dense ne se retrouve que si
+  la photo s'assombrit avec elle. Garde 1.0 par défaut ; baisse-le seulement si
+  les éclairages sont incompatibles (jour vs nuit, intérieur vs extérieur, flash
+  vs lumière naturelle), pour ne garder que la couleur.
+- Le transfert par zones n'atteint en général qu'environ 75–80 % de la
+  saturation de la référence (les tons très sombres portent peu de couleur).
+  Si la référence est nettement plus intense ou plus saturée que la source,
+  compense dans "finishing" : vibrance (ravive surtout les couleurs ternes)
+  et/ou saturation (toutes les couleurs), de -1.0 à 1.0, 0 = neutre.
+  Ordres de grandeur : référence intense → vibrance 0.3 à 0.6 et saturation
+  0.1 à 0.2 ; référence douce ou délavée → valeurs négatives.
+- Dans "finishing", ne donne QUE "saturation" et "vibrance" (les roues et la
+  courbe restent à l'utilisateur). Mets "finishing": null si rien n'est à compenser.
+
 ## Règles
 - N'invente AUCUNE valeur de couleur (pas de RGB, hex, lift, gamma…).
 - Utilise uniquement les identifiants présents dans analysis.json :
@@ -281,22 +312,20 @@ Mon logiciel a découpé chaque image en zones de couleur. Fichiers joints :
   intentions possibles : lightness (plus clair / sombre), saturation, warmth
   (+ plus chaud, - plus froid), tint (+ magenta, - vert), chacune ∈
   -large | -medium | -small | 0 | +small | +medium | +large.
-- Si les contextes sont très différents, préfère luminance_strength ≤ 0.5
-  (on emprunte surtout la couleur, pas le contraste).
 - Raisonne d'abord librement, puis termine par UN SEUL bloc ```json respectant
   exactement ce format (garde analysis_id tel quel) :
 
 ```json
 {{ "format": "{recipe_format}", "version": {recipe_version}, "analysis_id": "{analysis_id}",
   "name": "...", "description": "...",
-  "global": {{ "luminance_strength": 0.0-1.0, "chroma_strength": 0.0-1.0,
-              "preserve_neutrals": 0.0-1.0, "skin_protection": 0.0-1.0,
-              "zone_separation": "sharp|medium|soft", "mix": 0.0-1.0 }},
+  "global": {{ "luminance_strength": 1.0, "chroma_strength": 1.0,
+              "preserve_neutrals": 0.0, "skin_protection": 0.0-1.0,
+              "zone_separation": "sharp|medium|soft", "mix": 1.0 }},
   "links": [ {{ "source_zone": 1, "targets": {{ "2": 0.7, "4": 0.3 }},
-               "strength": "strong", "intent": {{ "warmth": "+small" }},
+               "strength": "full", "intent": {{ "warmth": "+small" }},
                "rationale": "..." }},
              {{ "source_zone": 2, "keep": true, "rationale": "..." }} ],
-  "finishing": null }}
+  "finishing": {{ "saturation": 0.0, "vibrance": 0.0 }} }}
 ```
 """
 

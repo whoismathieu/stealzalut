@@ -568,6 +568,15 @@ Mon logiciel a découpé chaque image en zones de couleur. Fichiers joints :
 > - Une recette s'applique sur la table **automatique** : les zones qu'elle ne cite pas reviennent à l'auto. L'import compte pour une seule étape d'annulation.
 > - Images du pack : la carte des zones est lissée par un filtre médian et les contours minuscules sont ignorés. Sinon, les contours suivaient le bruit des pixels et devenaient illisibles.
 
+> **Correctif après un premier vrai essai** (une rue de Tokyo de nuit vers une rue au crépuscule, recette écrite par l'IA) : le résultat ne bougeait presque pas, pour deux raisons.
+> - **Bug** : la force d'une zone réduisait aussi sa part du changement de luminosité *global*. Deux zones voisines dosées différemment ne suivaient plus la même courbe de tons. Il y avait donc des inversions, puis un lissage forcé à 2,0 qui mélangeait les zones. Désormais, `strength` ne dose que ce que la zone choisit : sa couleur, et la luminosité de sa cible si elle l'a demandée. Seule une zone verrouillée reste entièrement intacte.
+> - **Dosages multipliés** : force par zone × intensité couleur × mix, plus la protection des neutres. L'IA avait choisi des valeurs prudentes partout (« medium », 0,75, 0,85, 0,25), qui laissaient environ 30 à 50 % de la couleur. Le prompt explique maintenant que ces réglages se multiplient, que le plein effet est la valeur normale, et donne le barème en pourcentages. À l'import, si la dose moyenne (`colour_dose`, pondérée par la surface, zones verrouillées exclues) est sous 50 %, l'application propose « Doser à 100 % » (`full_dose`). Ce bouton garde les correspondances, les intentions et les zones protégées, et compte pour une étape d'annulation séparée.
+
+> **Intensité du look** (même essai, après correction du dosage) : le rendu restait moins dense que la référence.
+> - L'ancien prompt conseillait `luminance_strength ≤ 0.5` « si les contextes sont très différents ». L'IA gardait donc la photo bien plus claire que la référence, alors que la densité (des tons sombres) fait une grande partie de l'intensité d'un look. Le prompt dit désormais de garder 1.0 par défaut et de ne baisser qu'en cas d'éclairages incompatibles (jour vs nuit, intérieur vs extérieur, flash).
+> - Le transfert par zones plafonne à environ 75–80 % de la saturation de la référence : les tons très sombres portent peu de couleur en sRGB. Mesure sur le cas Tokyo : 0,041 de chroma moyenne contre 0,053, et 13 % de pixels très colorés contre 23 %. Avec vibrance +0,5 et saturation +0,15, on atteint 0,049 et 23 %. L'IA peut donc maintenant renseigner `finishing.saturation` et `finishing.vibrance`, et rien d'autre : les roues et la courbe restent à l'utilisateur.
+> - La finition d'une recette est **fusionnée** (`merge_finishing`) : seuls les réglages présents dans la recette remplacent ceux en cours. Une recette exportée par l'application contient tout et remplace donc tout.
+
 ### 5.5. Variante sans pack (« profil de look »)
 
 Le client peut aussi vouloir réutiliser une référence sans l'image. Bouton **« Sauver le look »** → `.szlook` = zones référence (moments Oklab, surfaces, hex) + vignette basse résolution. Charger un `.szlook` remplace l'image de référence dans le modèle. Utile pour se constituer une bibliothèque de looks. Priorité basse.
@@ -585,6 +594,14 @@ Appliqués **après** la cuisson, en Oklab/Oklch, en float, sans quantification.
 - **Mix global** (0–1) : multiplie tout le déplacement.
 
 Tous ces réglages sont sérialisés dans `finishing` du `.szl`.
+
+> **Décisions prises en phase 4** (`core/finishing.py`, `gui/widgets/finishing_panel.py`) :
+> - **Pas de SciPy** : la courbe tonale utilise une interpolation cubique monotone (Fritsch-Carlson, le principe de PCHIP) écrite en NumPy, ce qui évite une dépendance lourde pour une seule courbe. Comme `PchipInterpolator`, elle est monotone et sans dépassement. Dans l'éditeur, un point reste entre la hauteur de ses voisins, donc la courbe ne peut pas redescendre.
+> - **Unités normalisées** : chaque réglage va de −1 à 1 (0 = neutre), ce qui rend les recettes lisibles et donne une correspondance directe avec les sliders. Les amplitudes réelles sont des constantes : roue ±0,15 en L et teinte jusqu'à 0,05 de chroma, bande ±30° de teinte et ±0,1 en L.
+> - **Courbes de teinte = 8 bandes fixes** (rouges, oranges, jaunes, verts, cyans, bleus, violets, magentas), chacune avec Teinte, Saturation et Luminosité, comme le panneau TSL de Lightroom. Ce sont les « bosses » de la spec, centrées sur la teinte Oklch de chaque couleur de référence, avec une largeur de 22°. Une recette peut aussi décrire d'autres bosses : elles s'appliquent, mais l'interface ne les montre pas.
+> - **Roues** : l'angle est la teinte Oklch (0° rose, 90° jaune, 180° sarcelle, 270° bleu) et le rayon la quantité de teinte. Le disque est calculé en Oklch : la couleur sous le point est exactement celle qui sera ajoutée.
+> - **Interface** : onglets « Ajustements | Finition » en bas de la fenêtre, dans le séparateur principal pour qu'on puisse les agrandir. La finition est enregistrée dans l'historique d'annulation.
+> - **Recettes** : `finishing: null` (cas de l'IA) garde la finition en cours. La finition est appliquée pour toutes les méthodes, pas seulement Zones.
 
 ---
 

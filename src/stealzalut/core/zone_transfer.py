@@ -210,11 +210,18 @@ def zone_delta(
     the lightness order (e.g. a bright sky matched to a dark sea).  A link
     can still opt in with ``luminance_strength`` (0 = global tone,
     1 = target zone's lightness).
+
+    ``strength`` doses what the zone *chooses* (its colour, and its opt-in
+    target lightness), never the shared global tone: zones dosed differently
+    must keep the same lightness mapping, or neighbours would swap tones
+    (folds, then forced smoothing that blends the zones together).  Only a
+    locked zone leaves its colours completely untouched.
     """
     delta = np.zeros_like(lab)
     if link.locked:
         return delta
 
+    delta[:, 0] = global_delta[:, 0]
     if link.targets and link.strength > 0.0:
         lo, hi = OKLAB_SCALE_LIMITS
         t_mean, t_cov = _target_moments(reference, link.targets)
@@ -230,9 +237,8 @@ def zone_delta(
         lum = 0.0 if link.luminance_strength is None else link.luminance_strength
         chroma = 1.0 if link.chroma_strength is None else link.chroma_strength
         zone_dl = new_l - lab[:, 0]
-        delta[:, 0] = (1.0 - lum) * global_delta[:, 0] + lum * zone_dl
-        delta[:, 1:] = chroma * (new_ab - lab[:, 1:])
-        delta *= link.strength
+        delta[:, 0] += link.strength * lum * (zone_dl - global_delta[:, 0])
+        delta[:, 1:] = link.strength * chroma * (new_ab - lab[:, 1:])
 
     intent = link.intent
     if not intent.is_neutral:

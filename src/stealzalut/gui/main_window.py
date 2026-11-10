@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QSplitter,
     QStatusBar,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -48,12 +49,16 @@ from stealzalut.core.grading import GridResult
 from stealzalut.core.lut_engine import VALID_LUT_SIZES
 from stealzalut.core.palette import DEFAULT_ZONE_COUNT, MAX_ZONE_COUNT, MIN_ZONE_COUNT
 from stealzalut.core.recipe import (
+    LOW_COLOUR_DOSE,
     RECIPE_SUFFIX,
     Recipe,
     RecipeError,
     apply_global,
     apply_recipe,
+    colour_dose,
     dump_recipe,
+    full_dose,
+    merge_finishing,
     parse_recipe,
     recipe_to_dict,
 )
@@ -66,6 +71,7 @@ from stealzalut.core.zone_transfer import (
 from stealzalut.gui.history import EditState, History
 from stealzalut.gui.widgets.adjustments_panel import AdjustmentsPanel
 from stealzalut.gui.widgets.correspondence_view import SOURCE, CorrespondenceView
+from stealzalut.gui.widgets.finishing_panel import FinishingPanel
 from stealzalut.gui.widgets.image_drop_zone import ImageDropZone
 from stealzalut.gui.widgets.paste_recipe_dialog import PasteRecipeDialog
 from stealzalut.gui.widgets.preview_panel import PreviewPanel
@@ -193,15 +199,20 @@ class MainWindow(QMainWindow):
         self._main_splitter.addWidget(splitter)
         self._corr_group = self._build_correspondence_panel()
         self._main_splitter.addWidget(self._corr_group)
-        self._main_splitter.setSizes([330, 420])
-        root_layout.addWidget(self._main_splitter, stretch=1)
 
-        # ── Adjustments (sliders on top of the transfer) ─────────────
-        adjust_group = QGroupBox("Ajustements")
-        adjust_layout = QVBoxLayout(adjust_group)
+        # ── Adjustments and finishing tools, in tabs ─────────────────
+        self._bottom_tabs = QTabWidget()
+        self._bottom_tabs.setObjectName("bottomTabs")
         self._adjustments = AdjustmentsPanel()
-        adjust_layout.addWidget(self._adjustments)
-        root_layout.addWidget(adjust_group)
+        self._bottom_tabs.addTab(self._adjustments, "Ajustements")
+        self._finishing_panel = FinishingPanel()
+        self._bottom_tabs.addTab(self._finishing_panel, "Finition")
+        self._bottom_tabs.setTabToolTip(
+            1, "Roues couleur, courbe de luminosité, réglages par couleur (après le transfert)"
+        )
+        self._main_splitter.addWidget(self._bottom_tabs)
+        self._main_splitter.setSizes([300, 360, 250])
+        root_layout.addWidget(self._main_splitter, stretch=1)
 
         # ── Middle: Controls (Algorithm + LUT size + Export button) ─
         controls_layout = QHBoxLayout()
@@ -413,6 +424,7 @@ class MainWindow(QMainWindow):
 
         # Slider moved (debounced by the panel) → rebuild the grid
         self._adjustments.params_changed.connect(self._on_params_changed)
+        self._finishing_panel.finishing_changed.connect(self._on_finishing_changed)
 
         # Correspondence editor
         self._corr_view.table_changed.connect(self._on_table_edited)
@@ -461,6 +473,13 @@ class MainWindow(QMainWindow):
         self._update_undo_buttons()
         if changed:
             self._refresh_preview_if_ready()
+
+    def _on_finishing_changed(self, finishing: Any, merge_key: str) -> None:
+        """Called on every finishing edit (the preview refresh is debounced)."""
+        state = replace(self._history.current, finishing=finishing)
+        if self._history.push(state, merge_key or None):
+            self._edit_timer.start()
+        self._update_undo_buttons()
 
     def _on_image_changed(self, _image: Any) -> None:
         """Called when either source or reference image is loaded."""
@@ -613,6 +632,7 @@ class MainWindow(QMainWindow):
             model.analysis_id,
             self._zone_count,
             name=Path(path).stem,
+            finishing=state.finishing,
         )
         try:
             Path(path).write_text(dump_recipe(data), encoding="utf-8")
@@ -647,15 +667,69 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Recette non applicable", str(exc))
             return False
         params, tau = apply_global(recipe, self._history.current.params, self._history.current.tau)
-        state = EditState(table, params, tau)
+        # Only the finishing settings the recipe gives replace the current ones
+        # (an AI sets saturation / vibrance, the user's wheels and curve stay)
+        finishing = merge_finishing(recipe, self._history.current.finishing)
+        state = EditState(table, params, tau, finishing)
         if self._history.push(state):
             self._restore(state)
         title = f"« {recipe.name} »" if recipe.name else "importée"
-        # Shown now and again when the re-baked preview arrives (not overwritten by it)
         note = f"Recette {title} appliquée : {len(recipe.links)} zone(s) réglée(s)."
+        boosts = [
+            f"{label} {round(getattr(finishing, key) * 100):+d} %"
+            for key, label in (("vibrance", "vibrance"), ("saturation", "saturation"))
+            if key in recipe.finishing_keys and getattr(finishing, key) != 0.0
+        ]
+        if boosts and recipe.finishing_keys <= {"saturation", "vibrance"}:
+            note += f" Finition : {', '.join(boosts)}."
+
+        # Doses multiply: a recipe cautious everywhere barely changes anything
+        areas = {zone.id: zone.area for zone in model.source.zones}
+        dose = colour_dose(table, params, areas)
+        if dose < LOW_COLOUR_DOSE and self._ask_low_dose(dose, table, params):
+            full_table, full_params = full_dose(table, params)
+            boosted = EditState(full_table, full_params, tau, finishing)
+            if self._history.push(boosted):  # its own undo step: Ctrl+Z = recipe dose
+                self._restore(boosted)
+            note += " Dosée à 100 % (Ctrl+Z pour revenir au dosage de la recette)."
+
+        # Shown now and again when the re-baked preview arrives (not overwritten by it)
         self._status_note = f"{note} {recipe.description}".strip()
         self._status_bar.showMessage(self._status_note)
         return True
+
+    def _ask_low_dose(self, dose: float, table: CorrespondenceTable, params: Any) -> bool:
+        """Offer to raise a weak recipe to full dose; ``True`` = raise it."""
+        unlocked = [link for link in table.links if not link.locked and link.targets]
+        strengths = sorted({round(link.strength * 100) for link in unlocked})
+        causes = [f"force par zone {', '.join(f'{s} %' for s in strengths)}"]
+        if params.chroma_strength < 1.0:
+            causes.append(f"intensité couleur {round(params.chroma_strength * 100)} %")
+        if params.mix < 1.0:
+            causes.append(f"mix {round(params.mix * 100)} %")
+        if params.preserve_neutrals > 0.0:
+            causes.append(
+                f"préserver les neutres {round(params.preserve_neutrals * 100)} % "
+                "(bride encore les tons peu saturés)"
+            )
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Recette très peu dosée")
+        box.setText(
+            f"Avec cette recette, la couleur de la référence n'est appliquée qu'à "
+            f"{round(dose * 100)} % en moyenne : ses réglages se multiplient\n"
+            f"({' × '.join(causes)})."
+        )
+        box.setInformativeText(
+            "« Doser à 100 % » garde les correspondances, les intentions et les zones "
+            "protégées de la recette, et met les forces, l'intensité couleur et le mix à "
+            "100 % (préserver les neutres à 0 %).\nCtrl+Z revient au dosage de la recette."
+        )
+        boost = box.addButton("Doser à 100 %", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Garder la recette", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(boost)
+        box.exec()
+        return box.clickedButton() is boost
 
     def _ask_other_analysis(self, recipe: Recipe) -> str:
         """``"apply"``, ``"recompute"`` or ``"cancel"`` for a recipe of other zones."""
@@ -764,6 +838,7 @@ class MainWindow(QMainWindow):
         """Show *state* everywhere (after undo/redo)."""
         # The panel re-emits these params later; the history ignores them (no change)
         self._adjustments.set_params(state.params)
+        self._finishing_panel.set_finishing(state.finishing)
         self._tau_slider.blockSignals(True)
         self._tau_slider.setValue(round(state.tau * _TAU_STEPS))
         self._tau_slider.blockSignals(False)
@@ -926,6 +1001,7 @@ class MainWindow(QMainWindow):
             method=method,
             lut_size=lut_size,
             params=self._adjustments.params(),
+            finishing=self._history.current.finishing,
             model=model,
             zone_count=self._zone_count,
             prepare=partial(_with_tau, self._history.current.tau),
@@ -1035,6 +1111,7 @@ class MainWindow(QMainWindow):
             title=title,
             method=method,
             params=self._adjustments.params(),
+            finishing=self._history.current.finishing,
             model=None if raw_model is None else self._effective_model(raw_model),
         )
         self._export_worker.progress.connect(self._on_export_progress)

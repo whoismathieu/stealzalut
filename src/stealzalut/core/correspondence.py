@@ -45,8 +45,10 @@ class Link:
     Attributes:
         source_zone: Source zone id.
         targets: ``{reference_zone_id: weight}`` summing to 1; empty means
-            "keep this zone as it is".
-        strength: 0 = untouched, 1 = full transfer.
+            "keep this zone's colours" (its tone still follows the image).
+        strength: Dose of the zone's own choice (colour, opt-in target
+            lightness): 0 = keeps its colours, 1 = full transfer.  It never
+            changes the global tone mapping, which all unlocked zones share.
         luminance_strength: How much the zone takes its target's lightness
             (``None`` / 0 = follow the global tone mapping, 1 = target
             lightness; may fold the LUT if zones swap lightness order).
@@ -72,7 +74,13 @@ class Link:
 
     @property
     def is_identity(self) -> bool:
-        """True when this link leaves its zone untouched."""
+        """True when this link leaves its zone completely untouched (locked);
+        any unlocked zone at least follows the global tone mapping."""
+        return self.locked
+
+    @property
+    def keeps_colours(self) -> bool:
+        """True when the zone keeps its colours (only its tone may change)."""
         return self.locked or (
             (not self.targets or self.strength == 0.0) and self.intent.is_neutral
         )

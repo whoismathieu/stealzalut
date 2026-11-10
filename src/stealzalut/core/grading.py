@@ -33,6 +33,7 @@ from numpy.typing import NDArray
 
 from stealzalut.core.color_transfer import TransferModel
 from stealzalut.core.colorspace import gamut_compress, oklab_to_oklch, oklab_to_srgb, srgb_to_oklab
+from stealzalut.core.finishing import Finishing, apply_finishing
 from stealzalut.core.lut_engine import generate_neutral_grid
 from stealzalut.core.regularize import fold_fraction, smooth_field
 
@@ -145,6 +146,7 @@ def build_grid(
     model: TransferModel,
     size: int,
     params: GradingParams | None = None,
+    finishing: Finishing | None = None,
 ) -> GridResult:
     """Bake *model* onto a *size*³ grid with the user's adjustments.
 
@@ -156,6 +158,8 @@ def build_grid(
         model: Fitted transfer model.
         size: LUT resolution per axis.
         params: Adjustments (defaults: none).
+        finishing: Finishing tools, applied last, after the fold control
+            (wheels, tone curve, colour bands, saturation).
 
     Returns:
         The grid and its diagnostics.
@@ -168,7 +172,7 @@ def build_grid(
     baseline = model.fold_reference()
     if baseline is model:
         raw_folds = fold_fraction(lab_raw[:, 0], size)
-        if params.is_passthrough:
+        if params.is_passthrough and (finishing is None or finishing.is_identity):
             return GridResult(raw, raw_folds, 0.0, auto_smoothed=False)
     else:
         raw_folds = fold_fraction(srgb_to_oklab(baseline.apply(base))[:, 0], size)
@@ -185,6 +189,10 @@ def build_grid(
             break
         smoothing = max(smoothing * 2.0, AUTO_SMOOTHING_START)
         auto = True
+
+    if finishing is not None and not finishing.is_identity:
+        lab_out = apply_finishing(lab_out, finishing)
+        folds = fold_fraction(lab_out[:, 0], size)
 
     grid = oklab_to_srgb(gamut_compress(lab_out))
     return GridResult(grid, folds, smoothing, auto_smoothed=auto)

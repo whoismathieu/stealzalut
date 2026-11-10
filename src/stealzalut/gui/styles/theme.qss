@@ -404,3 +404,58 @@ QMenu::item:selected {
 QMenu::item:disabled {
     color: #5c6370;
 }
+
+/* ── Bottom tabs (adjustments / finishing) ─────────────────────────────────── */
+#bottomTabs::pane {
+    border: 1px solid #2e3238;
+    border-radius: 8px;
+    background-color: #212429;
+    top: -1px;
+}
+
+#bottomTabs QTabBar::tab {
+    background-color: #1a1b1e;
+    color: #9da5b4;
+    padding: 6px 16px;
+    border: 1px solid #2e3238;
+    border-bottom: none;
+    border-top-left-radius: 6px;
+    border-top-right-radius: 6px;
+    margin-right: 2px;
+}
+
+#bottomTabs QTabBar::tab:selected {
+    background-color: #212429;
+    color: #e0e2e6;
+    font-weight: 600;
+}
+
+#finishingPanel QSlider::groove:horizontal {
+    height: 4px;
+    background: #3a3f4b;
+    border-radius: 2px;
+}
+
+#finishingPanel QSlider::handle:horizontal {
+    background: #e0e2e6;
+    width: 12px;
+    margin: -5px 0;
+    border-radius: 6px;
+}
+
+#toneCurveEditor {
+    border-radius: 6px;
+}
+
+#resetCurveButton, #resetFinishingButton {
+    background-color: #282c34;
+    border: 1px solid #3a3f4b;
+    border-radius: 4px;
+    color: #c0c6d4;
+    padding: 4px 10px;
+}
+
+#resetCurveButton:hover, #resetFinishingButton:hover {
+    border-color: #4f80ff;
+    color: #ffffff;
+}

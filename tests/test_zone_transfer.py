@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
@@ -62,8 +64,10 @@ class TestCorrespondenceTable:
 
     def test_identity_links(self) -> None:
         assert Link(source_zone=1, locked=True, targets={1: 1.0}).is_identity
-        assert Link(source_zone=1).is_identity  # no target
-        assert not Link(source_zone=1, intent=Intent(warmth="+small")).is_identity
+        assert not Link(source_zone=1).is_identity  # no target: its tone still follows
+        assert Link(source_zone=1).keeps_colours
+        assert Link(source_zone=1, targets={1: 1.0}, strength=0.0).keeps_colours
+        assert not Link(source_zone=1, intent=Intent(warmth="+small")).keeps_colours
 
 
 class TestZoneTransfer:
@@ -105,6 +109,28 @@ class TestZoneTransfer:
         zones_dl = model.displacement(lab)[:, 0]
         global_dl = srgb_to_oklab(model.global_model.apply(generate_neutral_grid(17)))[:, 0]
         np.testing.assert_allclose(zones_dl, global_dl - lab[:, 0], atol=1e-5)
+
+    def test_strength_doses_colour_not_tone(self, model: ZoneTransferModel) -> None:
+        """Regression: a strength < 1 also shrank the shared global lightness,
+        so zones dosed differently swapped tones (folds, forced smoothing)."""
+        table = model.table
+        for link, strength in zip(table.links, (0.3, 0.6, 0.0), strict=True):
+            table = table.with_link(replace(link, strength=strength))
+        dosed = model.with_table(table)
+        grid = generate_neutral_grid(17)
+        lab = srgb_to_oklab(grid)
+        global_dl = srgb_to_oklab(model.global_model.apply(grid))[:, 0] - lab[:, 0]
+        np.testing.assert_allclose(dosed.displacement(lab)[:, 0], global_dl, atol=1e-5)
+
+        # Strength 0: the zone keeps its colours but its tone follows the image
+        lab3 = _zone_lab(model, 3)
+        moved = dosed.displacement(lab3)
+        assert abs(moved[0, 0]) > 1e-4 or abs(global_dl).max() < 1e-4
+        full = model.displacement(lab3)
+        assert np.linalg.norm(moved[0, 1:]) < 0.25 * np.linalg.norm(full[0, 1:])
+
+        result = build_grid(dosed, 33)
+        assert result.fold_fraction == 0.0 and not result.auto_smoothed
 
     def test_intents(self, model: ZoneTransferModel) -> None:
         lab = _zone_lab(model, 2)

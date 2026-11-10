@@ -24,6 +24,7 @@ from numpy.typing import NDArray
 from PySide6.QtCore import QThread, Signal
 
 from stealzalut.core.color_transfer import ColorTransferEngine, TransferModel
+from stealzalut.core.finishing import Finishing
 from stealzalut.core.grading import GradingParams, build_grid
 from stealzalut.core.lut_export import write_cube_file
 
@@ -73,11 +74,13 @@ class ExportWorker(QThread):
         group: str = "StealZaLut",
         method: str = "mkl",
         params: GradingParams | None = None,
+        finishing: Finishing | None = None,
         model: TransferModel | None = None,
         parent: Any = None,
     ) -> None:
         super().__init__(parent)
         self._params = params or GradingParams()
+        self._finishing = finishing
         self._model = model  # reuse the preview's fitted model when available
         self._source = source_rgb
         self._reference = reference_rgb
@@ -115,7 +118,7 @@ class ExportWorker(QThread):
                 total_points,
             )
             self.progress.emit(30)
-            grid_result = build_grid(model, self._lut_size, self._params)
+            grid_result = build_grid(model, self._lut_size, self._params, self._finishing)
             baked_grid = grid_result.grid
             if grid_result.auto_smoothed:
                 logger.info(

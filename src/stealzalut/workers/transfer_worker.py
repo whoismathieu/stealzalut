@@ -20,6 +20,7 @@ from numpy.typing import NDArray
 from PySide6.QtCore import QThread, Signal
 
 from stealzalut.core.color_transfer import ColorTransferEngine, TransferModel
+from stealzalut.core.finishing import Finishing
 from stealzalut.core.grading import GradingParams, build_grid
 from stealzalut.core.lut_apply import apply_lut
 from stealzalut.core.palette import DEFAULT_ZONE_COUNT
@@ -66,6 +67,7 @@ class TransferWorker(QThread):
         lut_size: int = 33,
         render_max_size: int = PREVIEW_RENDER_MAX_SIZE,
         params: GradingParams | None = None,
+        finishing: Finishing | None = None,
         model: TransferModel | None = None,
         zone_count: int = DEFAULT_ZONE_COUNT,
         prepare: Callable[[TransferModel], TransferModel] | None = None,
@@ -78,6 +80,7 @@ class TransferWorker(QThread):
         self._lut_size = lut_size
         self._render_max_size = render_max_size
         self._params = params or GradingParams()
+        self._finishing = finishing
         self._model = model
         self._zone_count = zone_count
         self._prepare = prepare
@@ -103,7 +106,7 @@ class TransferWorker(QThread):
                     model = self._prepare(model)
             self.progress.emit(60)
 
-            grid_result = build_grid(model, self._lut_size, self._params)
+            grid_result = build_grid(model, self._lut_size, self._params, self._finishing)
             self.grid_ready.emit(grid_result)
             self.progress.emit(75)
 

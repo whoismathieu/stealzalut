@@ -677,6 +677,93 @@ class TestRecipesInWindow:
             window.stop_workers()
 
 
+class TestLowDoseRecipe:
+    _window = TestMainWindowZones._window
+
+    def _weak(self, analysis: str) -> Any:
+        from stealzalut.core.recipe import parse_recipe
+
+        return parse_recipe(
+            {
+                "analysis_id": analysis,
+                "global": {"chroma_strength": 0.75, "mix": 0.85, "preserve_neutrals": 0.25},
+                "links": [{"source_zone": z, "strength": "medium"} for z in (1, 2, 3)],
+            }
+        )
+
+    def test_boost_to_full_dose_is_its_own_undo_step(
+        self,
+        qapp: QApplication,
+        image_paths: tuple[Path, Path],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        window = self._window(qapp, image_paths)
+        try:
+            asked: list[float] = []
+            monkeypatch.setattr(
+                window, "_ask_low_dose", lambda dose, *_a: asked.append(dose) or True
+            )
+            assert window.apply_recipe(self._weak(window._zone_model.analysis_id))
+            assert asked and asked[0] == pytest.approx(0.6 * 0.75 * 0.85)
+
+            state = window._history.current
+            assert all(link.strength == 1.0 for link in state.table.links)
+            assert (state.params.chroma_strength, state.params.mix) == (1.0, 1.0)
+            assert state.params.preserve_neutrals == 0.0
+            assert all(link.origin == "ai" for link in state.table.links)
+
+            window.undo()  # back to the recipe's own dosage
+            assert all(link.strength == 0.6 for link in window._history.current.table.links)
+            assert window._adjustments.params().mix == pytest.approx(0.85)
+        finally:
+            window.stop_workers()
+
+    def test_keep_recipe_dose(
+        self,
+        qapp: QApplication,
+        image_paths: tuple[Path, Path],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        window = self._window(qapp, image_paths)
+        try:
+            monkeypatch.setattr(window, "_ask_low_dose", lambda *_a: False)
+            assert window.apply_recipe(self._weak(window._zone_model.analysis_id))
+            assert all(link.strength == 0.6 for link in window._history.current.table.links)
+        finally:
+            window.stop_workers()
+
+
+class TestAiFinishing:
+    _window = TestMainWindowZones._window
+
+    def test_ai_vibrance_keeps_user_curve(
+        self, qapp: QApplication, image_paths: tuple[Path, Path]
+    ) -> None:
+        from stealzalut.core.finishing import Finishing
+        from stealzalut.core.recipe import parse_recipe
+
+        window = self._window(qapp, image_paths)
+        try:
+            curve = ((0.0, 0.0), (0.5, 0.4), (1.0, 1.0))
+            window._finishing_panel.set_finishing(Finishing(tone_curve=curve))
+            window._finishing_panel.finishing_changed.emit(Finishing(tone_curve=curve), "")
+            recipe = parse_recipe(
+                {
+                    "analysis_id": window._zone_model.analysis_id,
+                    "links": [],
+                    "finishing": {"saturation": 0.15, "vibrance": 0.5},
+                }
+            )
+            assert window.apply_recipe(recipe)
+            finishing = window._history.current.finishing
+            assert (finishing.saturation, finishing.vibrance) == (0.15, 0.5)
+            assert finishing.tone_curve == curve
+            assert window._finishing_panel.finishing() == finishing
+            assert "vibrance +50 %" in window._status_note
+        finally:
+            window.stop_workers()
+
+
 class TestPasteDialog:
     def test_error_keeps_dialog_open(self, qapp: QApplication) -> None:
         from stealzalut.gui.widgets.paste_recipe_dialog import PasteRecipeDialog

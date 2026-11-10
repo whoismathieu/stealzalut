@@ -68,6 +68,13 @@ def test_prompt_names_ids_and_analysis(model: ZoneTransferModel) -> None:
     assert "S1, S2, S3" in prompt
     assert "R1" in prompt and "N'invente AUCUNE valeur de couleur" in prompt
     assert "```json" in prompt
+    # The AI must know that doses multiply and that full is the normal value
+    assert "MULTIPLIENT" in prompt and "PLEIN effet" in prompt
+    assert '"strength": "full"' in prompt
+    # Luminance is full by default; intensity can be compensated in finishing
+    assert "Garde 1.0 par défaut" in prompt and "préfère ≤ 0.5" not in prompt
+    assert '"luminance_strength": 1.0' in prompt
+    assert '"finishing": { "saturation": 0.0, "vibrance": 0.0 }' in prompt
 
 
 def test_write_pack_with_non_ascii_path(tmp_path: Path, model: ZoneTransferModel) -> None:

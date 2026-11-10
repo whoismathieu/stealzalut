@@ -15,10 +15,19 @@ from __future__ import annotations
 import json
 import math
 import re
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
 from typing import Any
 
 from stealzalut.core.correspondence import LEVELS, CorrespondenceTable, Intent, Level, Link, Origin
+from stealzalut.core.finishing import (
+    BAND_WIDTH,
+    Finishing,
+    HueBand,
+    Wheel,
+    finishing_to_dict,
+    normalize_curve,
+    with_band,
+)
 from stealzalut.core.grading import GradingParams
 
 RECIPE_FORMAT = "stealzalut.recipe"
@@ -38,6 +47,7 @@ SEPARATION_RANGE = (0.25, 3.0)
 
 _INTENT_FIELDS = tuple(f.name for f in fields(Intent))
 _GRADING_FIELDS = tuple(f.name for f in fields(GradingParams))
+_FINISHING_FIELDS = tuple(f.name for f in fields(Finishing))
 _GRADING_RANGES = {name: (0.0, 3.0 if name == "smoothing" else 1.0) for name in _GRADING_FIELDS}
 _ORIGINS: tuple[Origin, ...] = ("auto", "user", "ai")
 
@@ -72,6 +82,7 @@ class Recipe:
         grading: Global sliders given by the recipe (others keep their value).
         tau: Zone separation, if given.
         zone_count: Number of zones requested for the analysis, if given.
+        finishing: Finishing tools, or ``None`` (``null``: keep the current ones).
     """
 
     analysis_id: str | None
@@ -81,6 +92,10 @@ class Recipe:
     tau: float | None = None
     zone_count: int | None = None
     links: tuple[RecipeLink, ...] = ()
+    finishing: Finishing | None = None
+    #: Finishing settings the recipe actually gives (an AI only gives
+    #: saturation / vibrance; the user's wheels and curve must survive).
+    finishing_keys: frozenset[str] = frozenset()
 
 
 # ── Reading ──────────────────────────────────────────────────────────────────
@@ -163,6 +178,8 @@ def parse_recipe(source: str | dict[str, Any]) -> Recipe:
         tau=tau,
         zone_count=None if zone_count is None else int(zone_count),
         links=links,
+        finishing=_parse_finishing(data.get("finishing")),
+        finishing_keys=_finishing_keys(data.get("finishing")),
     )
 
 
@@ -291,6 +308,67 @@ def _parse_link(raw: Any, index: int) -> RecipeLink:
     )
 
 
+def _finishing_keys(raw: Any) -> frozenset[str]:
+    if not isinstance(raw, dict):
+        return frozenset()
+    return frozenset(name for name in _FINISHING_FIELDS if raw.get(name) is not None)
+
+
+def _parse_finishing(raw: Any) -> Finishing | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise RecipeError("« finishing » doit être un objet { … } ou null.")
+
+    def wheel(key: str) -> Wheel:
+        value = raw.get(key) or {}
+        if not isinstance(value, dict):
+            raise RecipeError(f"finishing.{key} doit être un objet {{ … }}.")
+        where = f"finishing.{key}"
+        return Wheel(
+            hue=_number(value.get("hue", 0.0), f"{where}.hue", -360.0, 360.0) % 360.0,
+            amount=_number(value.get("amount", 0.0), f"{where}.amount"),
+            lightness=_number(value.get("lightness", 0.0), f"{where}.lightness", -1.0, 1.0),
+        )
+
+    curve_raw = raw.get("tone_curve") or [[0.0, 0.0], [1.0, 1.0]]
+    if not isinstance(curve_raw, list) or len(curve_raw) < 2:
+        raise RecipeError("finishing.tone_curve doit être une liste d'au moins 2 points [x, y].")
+    points = []
+    for i, point in enumerate(curve_raw, start=1):
+        if not isinstance(point, list | tuple) or len(point) != 2:
+            raise RecipeError(f"finishing.tone_curve, point n°{i} : attendu [x, y].")
+        where = f"finishing.tone_curve, point n°{i}"
+        points.append((_number(point[0], where), _number(point[1], where)))
+
+    finishing = Finishing(
+        shadows=wheel("shadows"),
+        midtones=wheel("midtones"),
+        highlights=wheel("highlights"),
+        tone_curve=normalize_curve(tuple(points)),
+        saturation=_number(raw.get("saturation", 0.0), "finishing.saturation", -1.0, 1.0),
+        vibrance=_number(raw.get("vibrance", 0.0), "finishing.vibrance", -1.0, 1.0),
+    )
+    bands_raw = raw.get("bands") or []
+    if not isinstance(bands_raw, list):
+        raise RecipeError("finishing.bands doit être une liste.")
+    for i, band in enumerate(bands_raw, start=1):
+        where = f"finishing.bands n°{i}"
+        if not isinstance(band, dict) or "center" not in band:
+            raise RecipeError(f"{where} : objet avec « center » attendu.")
+        finishing = with_band(
+            finishing,
+            HueBand(
+                center=_number(band["center"], f"{where}.center", 0.0, 360.0),
+                hue=_number(band.get("hue", 0.0), f"{where}.hue", -1.0, 1.0),
+                saturation=_number(band.get("saturation", 0.0), f"{where}.saturation", -1.0, 1.0),
+                lightness=_number(band.get("lightness", 0.0), f"{where}.lightness", -1.0, 1.0),
+                width=_number(band.get("width", BAND_WIDTH), f"{where}.width", 5.0, 90.0),
+            ),
+        )
+    return finishing
+
+
 def _optional_number(raw: dict[str, Any], key: str, where: str) -> float | None:
     value = raw.get(key)
     return None if value is None else _number(value, f"{where}, {key}")
@@ -348,10 +426,73 @@ def apply_recipe(
     return table
 
 
+def merge_finishing(recipe: Recipe, current: Finishing) -> Finishing:
+    """*current* with only the finishing settings the recipe gives.
+
+    An AI recipe giving ``{"saturation": 0.15, "vibrance": 0.5}`` keeps the
+    user's wheels, curve and colour bands; a recipe exported by the app
+    gives everything and replaces everything.
+    """
+    if recipe.finishing is None or not recipe.finishing_keys:
+        return current
+    merged = current
+    for name in recipe.finishing_keys:
+        merged = replace(merged, **{name: getattr(recipe.finishing, name)})
+    return merged
+
+
 def apply_global(recipe: Recipe, params: GradingParams, tau: float) -> tuple[GradingParams, float]:
     """*params* and *tau* with the values the recipe gives."""
     values = {name: recipe.grading.get(name, getattr(params, name)) for name in _GRADING_FIELDS}
     return GradingParams(**values), tau if recipe.tau is None else recipe.tau
+
+
+#: Below this average colour dose, importing a recipe warns the user.
+LOW_COLOUR_DOSE = 0.5
+
+
+def colour_dose(
+    table: CorrespondenceTable,
+    params: GradingParams,
+    areas: dict[int, float],
+) -> float:
+    """Average share of the colour transfer a table actually applies.
+
+    Link strength, per-link and global colour strength and mix multiply;
+    the result is averaged over unlocked zones, weighted by area (locked
+    zones are deliberate and don't count).  The neutral protection is not
+    included: it depends on each pixel's saturation.
+
+    Returns:
+        A value in ``[0, 1]`` (1 when every unlocked zone gets the full transfer).
+    """
+    total = weighted = 0.0
+    for link in table.links:
+        if link.locked:
+            continue
+        area = areas.get(link.source_zone, 0.0)
+        chroma = 1.0 if link.chroma_strength is None else link.chroma_strength
+        dose = link.strength * chroma if link.targets else 0.0
+        total += area
+        weighted += area * dose * params.chroma_strength * params.mix
+    return weighted / total if total > 0 else 1.0
+
+
+def full_dose(
+    table: CorrespondenceTable, params: GradingParams
+) -> tuple[CorrespondenceTable, GradingParams]:
+    """The same correspondences at full dose.
+
+    Every unlocked link that transfers something gets ``strength = 1`` and
+    the default colour strength; global colour strength and mix go to 1 and
+    the neutral protection to 0.  Links switched off (strength 0), locked
+    zones, targets, intents and the other settings are kept.
+    """
+    for link in table.links:
+        if not link.locked and link.strength > 0.0:
+            table = table.with_link(replace(link, strength=1.0, chroma_strength=None))
+    full = replace(params, chroma_strength=1.0, mix=1.0, preserve_neutrals=0.0)
+    return table, full
 
 
 def _id_range(prefix: str, ids: tuple[int, ...]) -> str:
@@ -371,6 +512,7 @@ def recipe_to_dict(
     zone_count: int,
     name: str = "",
     description: str = "",
+    finishing: Finishing | None = None,
 ) -> dict[str, Any]:
     """Serialise the current state; :func:`parse_recipe` + :func:`apply_recipe`
     read it back to the same table and settings."""
@@ -408,7 +550,9 @@ def recipe_to_dict(
         "description": description,
         "global": global_settings,
         "links": links,
-        "finishing": None,
+        "finishing": (
+            None if finishing is None or finishing.is_identity else finishing_to_dict(finishing)
+        ),
     }
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import ClassVar
 
 import numpy as np
 import pytest
@@ -15,8 +16,10 @@ from stealzalut.core.recipe import (
     RecipeError,
     apply_global,
     apply_recipe,
+    colour_dose,
     dump_recipe,
     extract_json,
+    full_dose,
     parse_recipe,
     recipe_to_dict,
 )
@@ -171,6 +174,42 @@ class TestRoundTrip:
     def test_file_is_readable_utf8(self) -> None:
         text = dump_recipe(recipe_to_dict(AUTO, GradingParams(), 1.0, "x", 3, name="Été doré"))
         assert "Été doré" in text  # not \\u-escaped
+
+
+class TestDose:
+    AREAS: ClassVar[dict[int, float]] = {1: 0.5, 2: 0.3, 3: 0.2}
+
+    def test_doses_multiply(self) -> None:
+        assert colour_dose(AUTO, GradingParams(), self.AREAS) == pytest.approx(1.0)
+        # The Tokyo case: medium links, colour 75 %, mix 85 % → about 38 %
+        table = AUTO
+        for link in AUTO.links:
+            table = table.with_link(Link(link.source_zone, link.targets, strength=0.6))
+        params = GradingParams(chroma_strength=0.75, mix=0.85)
+        assert colour_dose(table, params, self.AREAS) == pytest.approx(0.6 * 0.75 * 0.85)
+
+    def test_locked_zones_do_not_count(self) -> None:
+        table = AUTO.with_link(Link(1, {1: 1.0}, strength=0.1, locked=True))
+        assert colour_dose(table, GradingParams(), self.AREAS) == pytest.approx(1.0)
+
+    def test_full_dose_keeps_choices(self) -> None:
+        table = AUTO.with_link(
+            Link(1, {1: 0.7, 2: 0.3}, strength=0.6, chroma_strength=0.5,
+                 intent=Intent(warmth="+small"), origin="ai", rationale="x")
+        )
+        table = table.with_link(Link(2, {2: 1.0}, strength=0.0))  # switched off on purpose
+        table = table.with_link(Link(3, {3: 1.0}, strength=0.3, locked=True))
+        params = GradingParams(luminance_strength=0.35, chroma_strength=0.75, mix=0.85,
+                               preserve_neutrals=0.25, skin_protection=0.6)
+        full_table, full_params = full_dose(table, params)
+
+        s1 = full_table.link(1)
+        assert s1.strength == 1.0 and s1.chroma_strength is None
+        assert s1.targets == {1: 0.7, 2: 0.3} and s1.intent == Intent(warmth="+small")
+        assert s1.rationale == "x" and s1.origin == "ai"
+        assert full_table.link(2).strength == 0.0  # off stays off
+        assert full_table.link(3) == table.link(3)  # locked untouched
+        assert full_params == GradingParams(luminance_strength=0.35, skin_protection=0.6)
 
 
 def test_analysis_id_is_deterministic() -> None:

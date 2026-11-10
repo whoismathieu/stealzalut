@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from stealzalut.core.correspondence import CorrespondenceTable
+from stealzalut.core.finishing import Finishing
 from stealzalut.core.grading import GradingParams
 
 #: Edits with the same merge key closer than this (s) form one undo step.
@@ -27,11 +28,13 @@ class EditState:
         table: Zone correspondences (``None`` outside the zones method).
         params: Adjustment sliders.
         tau: Zone separation.
+        finishing: Finishing tools (wheels, curve, colour bands…).
     """
 
     table: CorrespondenceTable | None
     params: GradingParams
     tau: float
+    finishing: Finishing = field(default_factory=Finishing)
 
 
 class History:

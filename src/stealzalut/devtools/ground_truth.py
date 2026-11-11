@@ -50,9 +50,8 @@ from stealzalut.core.grading import build_grid
 from stealzalut.core.lut_apply import apply_lut
 from stealzalut.utils.image_io import (
     SUPPORTED_EXTENSIONS,
-    bgr_to_rgb,
     create_thumbnail,
-    load_image_bgr,
+    load_image_rgb,
 )
 
 F64 = NDArray[np.float64]
@@ -352,7 +351,7 @@ def load_folder(folder: Path) -> list[tuple[str, U8]]:
         if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
             continue
         try:
-            image = bgr_to_rgb(load_image_bgr(path))
+            image = np.asarray(load_image_rgb(path))  # the bench grades sRGB pictures
         except (OSError, ValueError):
             continue
         images.append((path.name, create_thumbnail(image, BENCH_SIZE)))

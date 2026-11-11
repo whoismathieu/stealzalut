@@ -538,7 +538,15 @@ def _fit_reinhard(
 
 
 def _oklab_pixels(image: NDArray[np.uint8]) -> NDArray[np.float64]:
-    """Oklab values of (a deterministic subsample of) an image's pixels."""
+    """Oklab values of (a deterministic subsample of) an image's pixels.
+
+    A picture that carries its unclipped colours
+    (:class:`~stealzalut.utils.image_io.WideImage`) gives those, at the
+    resolution of the analysis copy.
+    """
+    wide = getattr(image, "analysis_lab", None)
+    if wide is not None:
+        return np.asarray(wide, dtype=np.float64).reshape(-1, 3)
     flat = image.reshape(-1, 3)
     stride = max(1, -(-flat.shape[0] // OKLAB_FIT_MAX_PIXELS))  # ceil division
     return srgb_to_oklab(flat[::stride].astype(np.float64) / 255.0)

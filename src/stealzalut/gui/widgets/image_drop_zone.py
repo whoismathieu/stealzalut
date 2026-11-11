@@ -37,9 +37,9 @@ from PySide6.QtWidgets import (
 from stealzalut.gui.overlay import highlight_zone
 from stealzalut.utils.image_io import (
     SUPPORTED_EXTENSIONS,
-    bgr_to_rgb,
     create_thumbnail,
-    load_image_bgr,
+    load_image_rgb,
+    rgb_to_bgr,
 )
 
 logger = logging.getLogger(__name__)
@@ -190,8 +190,8 @@ class ImageDropZone(QWidget):
         """
         path = Path(path)
         try:
-            bgr = load_image_bgr(path)
-            rgb = bgr_to_rgb(bgr)
+            rgb = load_image_rgb(path)
+            bgr = rgb_to_bgr(np.asarray(rgb))
             self._image_rgb = rgb
             self._image_path = path
             self._update_thumbnail(bgr)

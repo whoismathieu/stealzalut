@@ -59,6 +59,143 @@ SUPPORTED_EXTENSIONS: frozenset[str] = frozenset(
 )
 
 
+# ── Pictures with their unclipped colours ────────────────────────────────────
+
+#: Longest edge of the analysis copy (must equal ``palette.ANALYSIS_MAX_SIZE``).
+WIDE_ANALYSIS_SIZE = 256
+
+
+class WideImage(np.ndarray[Any, np.dtype[np.uint8]]):
+    """An sRGB uint8 picture that also remembers its colours before clipping.
+
+    The array itself is what is displayed: RGB, sRGB, 8 bits.  Converting a
+    Display P3 picture to that loses every colour sRGB cannot hold (a phone's
+    neons, for a start).  ``analysis_lab`` keeps them: the Oklab colours of
+    the analysis copy, computed from the file's own colour space, without
+    clipping.  The engine reads the look from those.
+
+    Attributes:
+        analysis_lab: Oklab ``(h, w, 3)`` of the analysis copy (same
+            geometry as ``create_thumbnail(image, WIDE_ANALYSIS_SIZE)``), or
+            ``None`` when the file is plain sRGB.  Arrays derived from this
+            one (slices, reshapes, thumbnails) do **not** inherit it.
+        source_space: Name of the colour space the file was in.
+    """
+
+    analysis_lab: NDArray[np.float64] | None
+    source_space: str
+
+    def __new__(
+        cls,
+        srgb: NDArray[np.uint8],
+        analysis_lab: NDArray[np.float64] | None = None,
+        source_space: str = "sRGB",
+    ) -> WideImage:
+        obj = np.asarray(srgb, dtype=np.uint8).view(cls)
+        obj.analysis_lab = analysis_lab
+        obj.source_space = source_space
+        return obj
+
+    def __array_finalize__(self, obj: Any) -> None:
+        # A view or a copy is another set of pixels: the analysis no longer fits
+        self.analysis_lab = None
+        self.source_space = "sRGB"
+
+
+def _profile_description(img: Any) -> str:
+    """Lower-case description of a Pillow image's ICC profile ("" if none)."""
+    icc = img.info.get("icc_profile")
+    if not icc or img.mode not in ("RGB", "RGBA"):
+        return ""
+    try:
+        import io
+
+        from PIL import ImageCms
+
+        profile = ImageCms.ImageCmsProfile(io.BytesIO(icc))
+        return str(ImageCms.getProfileDescription(profile)).lower()
+    except Exception:
+        return ""
+
+
+def _known_space(description: str) -> Any:
+    """The RGB space a profile description names, or ``None`` if not a known wide one."""
+    from stealzalut.core.rgb_spaces import ADOBE_RGB, DISPLAY_P3, PROPHOTO_RGB
+
+    if "p3" in description:
+        return DISPLAY_P3
+    if "adobe rgb" in description or "adobergb" in description:
+        return ADOBE_RGB
+    if "prophoto" in description or "romm" in description:
+        return PROPHOTO_RGB
+    return None
+
+
+def _open_for_analysis(path: Path) -> Any:
+    """Pillow image of *path* in its own colour space (embedded preview for RAW files)."""
+    from PIL import Image
+
+    suffix = path.suffix.lower()
+    if suffix in RAW_EXTENSIONS:
+        import io
+
+        import rawpy
+
+        with rawpy.imread(str(path)) as raw:
+            thumb = raw.extract_thumb()
+        if getattr(thumb, "format", None) != rawpy.ThumbFormat.JPEG:  # type: ignore[attr-defined]
+            return None
+        return Image.open(io.BytesIO(bytes(thumb.data)))
+    if suffix in HEIC_EXTENSIONS:
+        import pillow_heif
+
+        pillow_heif.register_heif_opener()
+    return Image.open(path)
+
+
+def _wide_analysis(path: Path, shape: tuple[int, int]) -> tuple[NDArray[np.float64], str] | None:
+    """Unclipped Oklab analysis copy of *path*, ``(h, w, 3)`` with *shape* = ``(h, w)``.
+
+    ``None`` when the file is sRGB, has no profile, or names a space the
+    application does not know: the sRGB picture is then all there is.
+    """
+    try:
+        from PIL import ImageOps
+
+        img = _open_for_analysis(path)
+        if img is None:
+            return None
+        with img:
+            space = _known_space(_profile_description(img))
+            if space is None:
+                return None
+            if img.format == "JPEG":
+                img.draft("RGB", (4 * shape[1], 4 * shape[0]))  # decode at reduced size
+            pixels = np.array(ImageOps.exif_transpose(img).convert("RGB"), dtype=np.uint8)
+        small = cv2.resize(pixels, (shape[1], shape[0]), interpolation=cv2.INTER_AREA)
+        lab = space.to_oklab(small.reshape(-1, 3).astype(np.float64) / 255.0)
+        return lab.reshape(shape[0], shape[1], 3), str(space.label)
+    except Exception as exc:
+        logger.debug("Wide-gamut analysis of %s skipped: %s", path, exc)
+        return None
+
+
+def load_image_rgb(path: str | Path, auto_develop_raw: bool = True) -> WideImage:
+    """Load an image as **RGB** sRGB uint8, with its unclipped colours for the engine.
+
+    Same files and errors as :func:`load_image_bgr`.  When the file is in a
+    wider space than sRGB (Display P3, Adobe RGB, ProPhoto), the result
+    carries ``analysis_lab``; see :class:`WideImage`.
+    """
+    path = Path(path)
+    rgb = bgr_to_rgb(load_image_bgr(path, auto_develop_raw=auto_develop_raw))
+    small_shape = create_thumbnail(rgb, WIDE_ANALYSIS_SIZE).shape[:2]
+    wide = _wide_analysis(path, (int(small_shape[0]), int(small_shape[1])))
+    if wide is None:
+        return WideImage(rgb)
+    return WideImage(rgb, wide[0], wide[1])
+
+
 # ── Colour management ────────────────────────────────────────────────────────
 
 

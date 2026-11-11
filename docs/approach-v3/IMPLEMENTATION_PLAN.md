@@ -328,6 +328,53 @@ chantier que la deuxième réserve de T10 ; il n'est pas commencé.
 
 ---
 
+## T10 ter — Le moteur analyse les couleurs d'origine, pas leur écrêtage · **fait**
+
+**Défaut.** Toute image était ramenée en sRGB 8 bits à la lecture : les couleurs hors
+sRGB d'une photo en Display P3 étaient coupées avant d'entrer dans le moteur, qui avait
+beau ne plus être borné ensuite.
+
+**Fait.** Une image chargée est un `WideImage` (`utils/image_io.py`) : le tableau
+lui-même reste l'image sRGB 8 bits **affichée** ; l'attribut `analysis_lab` porte les
+couleurs Oklab de la copie d'analyse (256 px), calculées depuis l'espace du fichier,
+sans écrêtage. La réduction en sRGB ne sert donc plus qu'à l'affichage.
+- `load_image_rgb(path) -> WideImage` ; `_wide_analysis`, `_known_space`,
+  `_profile_description`, `_open_for_analysis`. Les valeurs du fichier sont lues telles
+  quelles et converties par nos propres matrices (`core/rgb_spaces.py`) : aucune
+  conversion ICC intermédiaire, donc aucun écrêtage ni arrondi.
+- Espaces reconnus, par la description du profil ICC : Display P3, Adobe RGB, ProPhoto.
+  sRGB, absence de profil ou profil inconnu : pas de `analysis_lab`, comportement
+  d'avant.
+- `core/palette.py:analysis_oklab(image) -> (lab, h, w)` : point d'entrée unique des
+  pixels analysés. Utilisé par `analyze_zones`, `colour_stats`, `look._analysis_lab`,
+  `ambiance.reference_tint_curve`, `color_transfer._oklab_pixels`.
+- Un tableau dérivé (recadrage, copie, vignette) **perd** `analysis_lab`
+  (`__array_finalize__`) : il ne décrit plus les mêmes pixels.
+- La zone de dépôt et le banc chargent par `load_image_rgb`.
+- Tests : `tests/test_wide_images.py` (17).
+
+**Mesuré sur `IMG_6295.DNG` (aperçu intégré en Display P3).** 3,75 % des pixels de la
+copie d'analyse sont hors sRGB ; leur chroma moyenne passe de 0,170 (écrêtée) à 0,182.
+Chroma maximale 0,278 → 0,286. Effet sur l'aperçu de la méthode `look` : 0,16 niveau
+sur 255 en moyenne, 13 au plus ; sur le `.cube` Display P3 : 0,002 en moyenne, 0,05 au
+plus. **Correct, mais faible sur cette photo** : l'essentiel de l'image est dans sRGB.
+Chargement : 0,69 s. La fenêtre réelle transmet bien le `WideImage` au moteur (modèle
+identique à celui ajusté directement).
+
+**Limites qui restent.**
+- 8 bits : les fichiers 16 bits sont encore lus en 8 bits.
+- Les méthodes héritées de `color-matcher` (`mkl`, `reinhard`, `hm`…) travaillent sur
+  les valeurs sRGB 8 bits ; seules `look`, `zones`, `ambiance` et `oklab` lisent les
+  couleurs larges.
+- L'aperçu et « Exporter l'image… » restent en sRGB : l'image passée dans la grille
+  d'aperçu est la version écrêtée. Le `.cube`, lui, est calculé sur le modèle ajusté
+  aux couleurs larges.
+- Le banc de mesure étalonne des images sRGB (`Grade.apply` rend un tableau ordinaire).
+- Pas de test avec un vrai profil P3 : Pillow ne sait pas en fabriquer ; les tests
+  font lire un profil comme « Display P3 ».
+
+---
+
 ## T11 — Banc de mesure à vérité connue · **outil fait, pas encore lancé sur de vraies photos**
 
 **Pourquoi.** Les constantes du mode `look` ont été réglées à l'œil sur huit paires

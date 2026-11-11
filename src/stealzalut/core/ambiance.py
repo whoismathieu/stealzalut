@@ -31,8 +31,7 @@ from numpy.typing import NDArray
 
 from stealzalut.core.color_transfer import OklabTransferModel, TransferModel, fit_transfer
 from stealzalut.core.colorspace import gamut_compress, oklab_to_srgb, srgb_to_oklab
-from stealzalut.core.palette import ANALYSIS_MAX_SIZE
-from stealzalut.utils.image_io import create_thumbnail
+from stealzalut.core.palette import analysis_oklab
 
 F64 = NDArray[np.float64]
 
@@ -71,8 +70,7 @@ def reference_tint_curve(reference_rgb: NDArray[np.uint8]) -> F64:
     Returns:
         ``(CURVE_SAMPLES, 2)`` array, sampled at :func:`curve_lightness`.
     """
-    small = create_thumbnail(reference_rgb, ANALYSIS_MAX_SIZE)
-    lab = srgb_to_oklab(small.reshape(-1, 3).astype(np.float64) / 255.0)
+    lab = analysis_oklab(reference_rgb)[0]
     levels = curve_lightness()
     weights = np.exp(-0.5 * ((levels[:, None] - lab[None, :, 0]) / CURVE_BANDWIDTH) ** 2)
     overall = lab[:, 1:].mean(axis=0)

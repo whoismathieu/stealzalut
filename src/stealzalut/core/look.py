@@ -40,8 +40,7 @@ from numpy.typing import NDArray
 from stealzalut.core.color_transfer import TransferModel
 from stealzalut.core.colorspace import gamut_compress, oklab_to_srgb, srgb_to_oklab
 from stealzalut.core.finishing import eval_curve
-from stealzalut.core.palette import ANALYSIS_MAX_SIZE, colour_stats
-from stealzalut.utils.image_io import create_thumbnail
+from stealzalut.core.palette import analysis_oklab, colour_stats
 
 F64 = NDArray[np.float64]
 
@@ -106,9 +105,8 @@ def _smoothstep(x: F64, edge0: float, edge1: float) -> F64:
 
 
 def _analysis_lab(image: NDArray[np.uint8]) -> F64:
-    """Oklab pixels ``(N, 3)`` of the analysis copy of *image*."""
-    small = create_thumbnail(image, ANALYSIS_MAX_SIZE)
-    return srgb_to_oklab(small.reshape(-1, 3).astype(np.float64) / 255.0)
+    """Oklab pixels ``(N, 3)`` of the analysis copy of *image* (unclipped if known)."""
+    return analysis_oklab(image)[0]
 
 
 def weighted_quantile(values: F64, weights: F64, u: F64) -> F64:

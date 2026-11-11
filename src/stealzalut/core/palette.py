@@ -90,6 +90,25 @@ class ZonePalette:
         return tuple(z.id for z in self.zones)
 
 
+def analysis_oklab(image_rgb: NDArray[np.uint8]) -> tuple[F64, int, int]:
+    """Oklab pixels of the analysis copy of an image, and its height and width.
+
+    A picture loaded from a wide-gamut file carries its colours before they
+    were clipped to sRGB (:class:`~stealzalut.utils.image_io.WideImage`);
+    those are used.  Any other array is taken as sRGB.
+
+    Returns:
+        ``(lab, h, w)`` with *lab* of shape ``(h × w, 3)``, row by row.
+    """
+    wide = getattr(image_rgb, "analysis_lab", None)
+    if wide is not None:
+        h, w = wide.shape[:2]
+        return np.asarray(wide, dtype=np.float64).reshape(-1, 3), int(h), int(w)
+    small = create_thumbnail(image_rgb, ANALYSIS_MAX_SIZE)
+    h, w = small.shape[:2]
+    return srgb_to_oklab(small.reshape(-1, 3).astype(np.float64) / 255.0), int(h), int(w)
+
+
 # ── Analysis ─────────────────────────────────────────────────────────────────
 
 
@@ -109,9 +128,7 @@ def analyze_zones(
         The image's :class:`ZonePalette`.
     """
     k = int(np.clip(zone_count, MIN_ZONE_COUNT, MAX_ZONE_COUNT))
-    small = create_thumbnail(image_rgb, ANALYSIS_MAX_SIZE)
-    h, w = small.shape[:2]
-    lab = srgb_to_oklab(small.reshape(-1, 3).astype(np.float64) / 255.0)
+    lab, h, w = analysis_oklab(image_rgb)
 
     k = min(k, lab.shape[0])
     cv2.setRNGSeed(0)
@@ -238,8 +255,7 @@ class ColourStats:
 
 def colour_stats(image_rgb: NDArray[np.uint8]) -> ColourStats:
     """Measure how much an image's colours share a single hue."""
-    small = create_thumbnail(image_rgb, ANALYSIS_MAX_SIZE)
-    lab = srgb_to_oklab(small.reshape(-1, 3).astype(np.float64) / 255.0)
+    lab, _h, _w = analysis_oklab(image_rgb)
     chroma = np.hypot(lab[:, 1], lab[:, 2])
     coloured = chroma >= COLOURFUL_CHROMA
     fraction = float(coloured.mean())

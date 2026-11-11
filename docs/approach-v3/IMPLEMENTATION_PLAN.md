@@ -283,12 +283,48 @@ en Rec.709 γ 2,4 ; 99ᵉ centile ≤ 0,012. L'essentiel vient de l'arrondi 8 bi
   encore ramenées en sRGB 8 bits au chargement (aperçu, analyse). Dans un `.cube`
   large, ce que reçoivent ces couleurs est une extrapolation. Elle est lisse et ne
   replie pas, mais elle n'est validée par aucune image.
-- La mesure de repliement suppose qu'augmenter R, V ou B augmente la luminosité : faux
-  pour les primaires imaginaires de ProPhoto (sa grille neutre « replie » déjà de 0,6 %
-  selon cette mesure). Le rendu `look` n'en ajoute pas.
+- ProPhoto a été retiré du menu après coup (voir T10 bis).
 
 **Reste possible.** Garder les images en espace large de bout en bout (lecture en
 flottant, aperçu géré en couleur) : c'est ce qui lèverait la deuxième réserve.
+
+---
+
+## T10 bis — Précisions de Mathieu du 2026-11-12 · **appliquées**
+
+**Chaîne de Camera Raw / Lightroom, telle que rapportée par Mathieu (non vérifiée
+ici, faute de Lightroom) :**
+- un profil créé dans Camera Raw à partir d'un `.cube` repose sur le socle **Adobe
+  Standard**, pas sur Adobe Couleur ni Apple ProRAW. Un export intermédiaire fait sous
+  Adobe Couleur donnerait donc au `.cube` une image plus contrastée et plus saturée que
+  celle sur laquelle il sera appliqué (c'est l'explication proposée des rouges
+  « saumon ») ;
+- ordre : dématriçage → balance des blancs et réglages de base → profil de base →
+  courbe des tonalités → **LUT 3D du profil**, convertie dans l'espace choisi. La LUT
+  passe donc après les curseurs de tonalité.
+
+Conséquence pour l'utilisateur, inscrite dans le bandeau des sources RAW : exporter
+l'image intermédiaire sous un **profil neutre (Adobe Standard), curseurs à zéro**.
+
+**Changements.**
+- Bandeau RAW : nouveau texte, mot pour mot dans `SPEC.md` §4. Il ne mentionne plus
+  « Exporter l'image… » (le bouton existe toujours).
+- `CUBE_SPACES` = sRGB, Display P3, Adobe RGB, Rec.709 γ 2,4. **ProPhoto RGB n'est plus
+  proposé** : ses primaires ne sont pas des couleurs réelles, les coins d'une grille
+  `[0, 1]³` y tombent là où les réponses des cônes sont négatives ; la luminosité n'y
+  est plus monotone le long des axes (sa grille neutre « replie » déjà de 0,6 %) et
+  l'interpolation trilinéaire entre ces nœuds n'est pas fiable. `PROPHOTO_RGB` reste
+  défini dans `core/rgb_spaces.py` pour les conversions, pas pour l'export.
+- Vérifié et testé : `linear_to_oklab` utilise une racine cubique **signée**
+  (`np.cbrt`), sans écrêtage des réponses négatives
+  (`test_oklab_keeps_colours_with_negative_components`).
+- La compression de gamut vise déjà l'espace d'export (T10).
+
+**Non fait : aperçu en Display P3.** La consigne `{ colorSpace: "display-p3" }` est
+celle d'un canevas web ; l'application est en Qt. L'équivalent demanderait de garder
+les images en espace large du chargement à l'affichage (aujourd'hui tout est ramené en
+sRGB 8 bits à la lecture) et de marquer les images Qt avec leur espace. C'est le même
+chantier que la deuxième réserve de T10 ; il n'est pas commencé.
 
 ---
 

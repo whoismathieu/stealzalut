@@ -924,7 +924,13 @@ class TestSourceFidelity:
             window._update_source_hint()
             assert not window._source_hint.isHidden()
             text = window._source_hint.findChild(QLabel, "modeHintLabel").text()
-            assert "fichier RAW" in text and "Exporter l'image" in text
+            assert text == (
+                "La source est un fichier RAW : l'aperçu utilise le rendu de l'appareil et non "
+                "le développement de ton logiciel, ce qui faussera les couleurs du .cube. Pour "
+                "un résultat exact : dans ton logiciel, passe sur un profil neutre (ex. Adobe "
+                "Standard) avec les curseurs à zéro, exporte la photo (JPEG ou TIFF), utilise "
+                "cet export ici pour créer le .cube, puis applique le profil à ton RAW."
+            )
 
             window._source_zone.clear_image()
             assert window._source_hint.isHidden()

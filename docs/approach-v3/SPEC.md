@@ -220,9 +220,9 @@ Une tranche de tons qui couvre moins de 1 % de l'image vaut `null`.
 | Barre d'état après import (livré) | `Recette « {nom} » appliquée en mode Rendu.` ; si l'analyse diffère : `Poids des zones de référence non repris : la recette a été écrite pour d'autres images.` |
 | Menu sans référence (livré) | `Charge d'abord une image de référence` |
 
-| Bandeau, source RAW (livré) | `La source est un fichier RAW : l'aperçu est calculé sur l'image déjà développée par l'appareil. Lightroom et les autres logiciels développent le RAW à leur façon : le .cube n'y donnera pas ces couleurs. Pour retrouver l'aperçu, exporte d'abord la photo de ton logiciel en JPEG ou TIFF sRGB et prends cet export comme source, ou utilise « Exporter l'image… ».` |
+| Bandeau, source RAW (livré) | `La source est un fichier RAW : l'aperçu utilise le rendu de l'appareil et non le développement de ton logiciel, ce qui faussera les couleurs du .cube. Pour un résultat exact : dans ton logiciel, passe sur un profil neutre (ex. Adobe Standard) avec les curseurs à zéro, exporte la photo (JPEG ou TIFF), utilise cet export ici pour créer le .cube, puis applique le profil à ton RAW.` |
 | Bouton d'export de l'image (livré) | `Exporter l'image…` |
-| Menu de l'espace (livré) | libellé `Espace du .cube :` ; entrées `sRGB`, `Display P3`, `Adobe RGB (1998)`, `ProPhoto RGB`, `Rec.709, gamma 2,4` |
+| Menu de l'espace (livré) | libellé `Espace du .cube :` ; entrées `sRGB`, `Display P3`, `Adobe RGB (1998)`, `Rec.709, gamma 2,4` (pas ProPhoto : voir T10) |
 | Fin d'export (livré) | `Ce .cube attend une image en {espace} déjà développée, et rend du {espace}.` suivi de ce qu'il faut choisir dans l'hôte |
 
 ## 5. Glossaire

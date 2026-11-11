@@ -157,7 +157,13 @@ REC709 = RGBSpace(
 )
 
 #: Spaces offered for the exported ``.cube``, in menu order.
-CUBE_SPACES: tuple[RGBSpace, ...] = (SRGB, DISPLAY_P3, ADOBE_RGB, PROPHOTO_RGB, REC709)
+#:
+#: ProPhoto RGB is deliberately left out: its primaries are not real colours,
+#: so the corners of a ``[0, 1]³`` grid fall where cone responses are negative.
+#: Lightness is no longer monotone along the grid's axes there (its neutral
+#: grid already "folds" by 0.6 %) and trilinear interpolation between such
+#: nodes is not trustworthy.
+CUBE_SPACES: tuple[RGBSpace, ...] = (SRGB, DISPLAY_P3, ADOBE_RGB, REC709)
 
 
 def space_by_key(key: str) -> RGBSpace:

@@ -44,7 +44,7 @@ def test_srgb_space_is_the_existing_conversion() -> None:
     assert np.allclose(SRGB.from_oklab(lab), oklab_to_srgb(lab), atol=1e-12)
 
 
-@pytest.mark.parametrize("space", CUBE_SPACES, ids=lambda s: s.key)
+@pytest.mark.parametrize("space", (*CUBE_SPACES, PROPHOTO_RGB), ids=lambda s: s.key)
 def test_round_trip(space: RGBSpace) -> None:
     colours = _colours()
     error = np.abs(space.from_oklab(space.to_oklab(colours)) - colours)
@@ -52,7 +52,7 @@ def test_round_trip(space: RGBSpace) -> None:
     assert error.max() < 1e-3  # pure gamma curves lose a little next to black
 
 
-@pytest.mark.parametrize("space", CUBE_SPACES, ids=lambda s: s.key)
+@pytest.mark.parametrize("space", (*CUBE_SPACES, PROPHOTO_RGB), ids=lambda s: s.key)
 def test_white_and_black_are_neutral(space: RGBSpace) -> None:
     lab = space.to_oklab(np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0], [0.5, 0.5, 0.5]]))
     assert lab[0, 0] == pytest.approx(0.0, abs=1e-6)
@@ -84,6 +84,26 @@ def test_rec709_differs_from_srgb_only_by_its_curve() -> None:
     grey = np.array([[0.5, 0.5, 0.5]])
     assert REC709.to_oklab(grey)[0, 0] < SRGB.to_oklab(grey)[0, 0]  # gamma 2.4 is darker
     assert np.array_equal(REC709.to_linear_srgb, SRGB.to_linear_srgb)
+
+
+def test_prophoto_is_not_offered_for_the_cube() -> None:
+    """Its primaries are imaginary: a [0, 1]³ grid in that space is not trustworthy."""
+    assert PROPHOTO_RGB not in CUBE_SPACES
+    assert [space.key for space in CUBE_SPACES] == ["srgb", "display-p3", "adobe-rgb", "rec709-g24"]
+    with pytest.raises(ValueError, match="Unknown colour space"):
+        space_by_key("prophoto")
+
+
+def test_oklab_keeps_colours_with_negative_components() -> None:
+    """Signed cube root, no hidden clamp: out-of-gamut colours survive the round trip."""
+    from stealzalut.core.colorspace import linear_to_oklab, oklab_to_linear
+
+    linear = np.array([[1.4, -0.05, -0.03], [-0.2, 1.1, -0.1], [-0.02, -0.05, 1.2]])
+    assert np.allclose(oklab_to_linear(linear_to_oklab(linear)), linear, atol=1e-6)
+    for space in (DISPLAY_P3, ADOBE_RGB):
+        corners = np.eye(3)
+        lab = space.to_oklab(corners)
+        assert np.allclose(space.oklab_to_linear(lab), corners, atol=1e-6)
 
 
 def test_space_by_key() -> None:
@@ -184,18 +204,18 @@ def test_wide_grid_keeps_colours_the_srgb_grid_clips() -> None:
 
 
 def test_grid_in_another_space_does_not_fold() -> None:
-    """The look's tone is monotone in lightness, whatever the space of the grid.
+    """The look's tone is monotone in lightness, whatever the offered space."""
+    model = fit_look(_neutral_street(), _green_dusk())
+    for space in WIDE:
+        assert build_grid(model, 17, None, None, space).fold_fraction == 0.0
 
-    The fold measure assumes that raising R, G or B raises lightness.  That
-    holds for real colours; ProPhoto's primaries are not real colours, so its
-    *neutral* grid already "folds" by that measure.  The grade must not add any.
-    """
+
+def test_prophoto_grid_is_why_it_is_left_out() -> None:
+    """Its neutral grid already breaks the fold measure (imaginary primaries)."""
     from stealzalut.core.lut_engine import generate_neutral_grid
     from stealzalut.core.regularize import fold_fraction
 
-    model = fit_look(_neutral_street(), _green_dusk())
-    for space in WIDE:
-        own = fold_fraction(space.to_oklab(generate_neutral_grid(17))[:, 0], 17)
-        assert build_grid(model, 17, None, None, space).fold_fraction <= own + 0.01
-        if space is not PROPHOTO_RGB:
-            assert own == 0.0
+    for space in CUBE_SPACES:
+        assert fold_fraction(space.to_oklab(generate_neutral_grid(17))[:, 0], 17) == 0.0
+    own = fold_fraction(PROPHOTO_RGB.to_oklab(generate_neutral_grid(17))[:, 0], 17)
+    assert own > 0.001

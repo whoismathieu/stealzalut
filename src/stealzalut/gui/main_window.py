@@ -751,11 +751,11 @@ class MainWindow(QMainWindow):
         layout = QHBoxLayout(bar)
         layout.setContentsMargins(10, 6, 6, 6)
         label = QLabel(
-            "La source est un fichier RAW : l'aperçu est calculé sur l'image déjà développée "
-            "par l'appareil. Lightroom et les autres logiciels développent le RAW à leur "
-            "façon : le .cube n'y donnera pas ces couleurs. Pour retrouver l'aperçu, exporte "
-            "d'abord la photo de ton logiciel en JPEG ou TIFF sRGB et prends cet export comme "
-            "source, ou utilise « Exporter l'image… »."
+            "La source est un fichier RAW : l'aperçu utilise le rendu de l'appareil et non "
+            "le développement de ton logiciel, ce qui faussera les couleurs du .cube. Pour "
+            "un résultat exact : dans ton logiciel, passe sur un profil neutre (ex. Adobe "
+            "Standard) avec les curseurs à zéro, exporte la photo (JPEG ou TIFF), utilise cet "
+            "export ici pour créer le .cube, puis applique le profil à ton RAW."
         )
         label.setObjectName("modeHintLabel")
         label.setWordWrap(True)

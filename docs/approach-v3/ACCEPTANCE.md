@@ -78,6 +78,6 @@ Réponses attendues de Mathieu, qui débloquent le plan :
 |---|---|
 | T03 | Curseur visible seulement en mode Rendu ; le déplacer change l'aperçu en moins de 0,5 s ; Ctrl+Z le ramène. |
 | T04 | Paire n° 6 : bandeau « La photo a peu de couleurs… » ; cas A : pas de bandeau. |
-| T05 | Cas B : ignorer la zone du cadre noir de la référence ne change pas le rendu de plus de 0,01 en L moyenne (elle pèse peu), ignorer la zone du ciel le change visiblement (planche à joindre). |
+| T05 | Cas B, `prototypes/run_p4.py` : sans focus, 88,5 % de pixels colorés ; R1 ignorée ≥ 94 % ; R2 ignorée ≤ 78 % (± 2 points). Planche `prototypes/out/p4_focus.jpg` à juger par Mathieu. |
 | T06 | Une recette exportée en mode Rendu se réimporte à l'identique ; les recettes de `docs/audit/data/` s'importent comme avant. |
 | T07 | Une vraie réponse d'IA s'importe sans erreur sur A et B ; planche avant / après jointe. |

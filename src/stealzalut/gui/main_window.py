@@ -16,7 +16,15 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 from PySide6.QtCore import Qt, QTimer, QUrl
-from PySide6.QtGui import QDesktopServices, QGuiApplication, QKeySequence, QShortcut
+from PySide6.QtGui import (
+    QColor,
+    QDesktopServices,
+    QGuiApplication,
+    QIcon,
+    QKeySequence,
+    QPixmap,
+    QShortcut,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -52,6 +60,7 @@ from stealzalut.core.look import (
     LookDiagnostics,
     LookTransferModel,
     look_diagnostics,
+    zone_weights,
 )
 from stealzalut.core.lut_engine import VALID_LUT_SIZES
 from stealzalut.core.palette import (
@@ -59,6 +68,8 @@ from stealzalut.core.palette import (
     MAX_ZONE_COUNT,
     MIN_ZONE_COUNT,
     ColourStats,
+    ZonePalette,
+    analyze_zones,
     colour_stats,
 )
 from stealzalut.core.recipe import (
@@ -89,7 +100,7 @@ from stealzalut.gui.widgets.image_drop_zone import ImageDropZone
 from stealzalut.gui.widgets.paste_recipe_dialog import PasteRecipeDialog
 from stealzalut.gui.widgets.preview_panel import PreviewPanel
 from stealzalut.gui.widgets.zone_inspector import ZoneInspector
-from stealzalut.gui.zone_text import dominant_colour_name
+from stealzalut.gui.zone_text import dominant_colour_name, pct
 from stealzalut.workers.export_worker import ExportWorker
 from stealzalut.workers.transfer_worker import TransferWorker
 
@@ -99,6 +110,12 @@ logger = logging.getLogger(__name__)
 EDIT_DEBOUNCE_MS = 75
 _TAU_STEPS = 100  # slider units per τ unit
 _SEPARATION_STEPS = 100  # slider units per separation unit
+#: Choices of the focus menu: label, weight of the reference zone.
+_FOCUS_CHOICES: tuple[tuple[str, float], ...] = (
+    ("Poids normal", 1.0),
+    ("Ignorer cette zone pour le rendu", 0.0),
+    ("Privilégier cette zone pour le rendu", 2.0),
+)
 _IDLE_MESSAGE = "Charge une source et une référence pour voir leurs zones."
 _ANALYSING_MESSAGE = "Analyse des zones de couleur…"
 
@@ -146,6 +163,8 @@ class MainWindow(QMainWindow):
         self._mode_hint_dismissed = False
         # Known limits of the look method on the current pair
         self._look_diagnostics: LookDiagnostics | None = None
+        # Zones of the reference, analysed when the focus menu first needs them
+        self._reference_palette: ZonePalette | None = None
         # Message kept in the status bar when the next preview arrives
         self._status_note = ""
 
@@ -279,6 +298,18 @@ class MainWindow(QMainWindow):
         self._separation_value.setMinimumWidth(36)
         controls_layout.addWidget(self._separation_value)
         self._refresh_separation_label()
+
+        # What the look method reads in the reference (hidden for other methods).
+        # The menu is popped up by hand, like the import menu (Qt font warning).
+        self._focus_btn = QPushButton("Référence ▾")  # the history does not exist yet
+        self._focus_btn.setObjectName("focusButton")
+        self._focus_btn.setToolTip(
+            "Choisir les zones de la référence dont le rendu s'inspire :\n"
+            "ignorer un cadre ou un sujet hors propos, privilégier un ciel…"
+        )
+        self._focus_menu = QMenu(self)
+        self._focus_btn.clicked.connect(self._open_focus_menu)
+        controls_layout.addWidget(self._focus_btn)
 
         # LUT size selector
         size_label = QLabel("LUT Size:")
@@ -456,8 +487,10 @@ class MainWindow(QMainWindow):
         """Wire up all signal-slot connections."""
         # Image loading → auto-preview
         self._source_zone.image_loaded.connect(self._on_image_changed)
-        self._reference_zone.image_loaded.connect(self._on_image_changed)
+        # Before _on_image_changed: the focus of the previous reference must be
+        # dropped before the preview of the new one starts
         self._reference_zone.image_loaded.connect(self._on_reference_loaded)
+        self._reference_zone.image_loaded.connect(self._on_image_changed)
 
         # Image cleared
         self._source_zone.image_cleared.connect(self._on_image_cleared)
@@ -545,6 +578,8 @@ class MainWindow(QMainWindow):
     def _on_image_cleared(self) -> None:
         """Called when an image is removed."""
         self._look_diagnostics = None
+        if not self._reference_zone.has_image:
+            self._drop_focus()
         self._update_mode_hint()
         self._model_cache = None
         self._drop_zone_editor()
@@ -806,6 +841,7 @@ class MainWindow(QMainWindow):
         return bar
 
     def _on_reference_loaded(self, image: Any) -> None:
+        self._drop_focus()
         self._reference_colours = colour_stats(image)
         self._mode_hint_dismissed = False
         self._update_mode_hint()
@@ -1010,6 +1046,7 @@ class MainWindow(QMainWindow):
         self._separation_slider.setValue(round(state.separation * _SEPARATION_STEPS))
         self._separation_slider.blockSignals(False)
         self._refresh_separation_label()
+        self._refresh_focus_button()
         self._show_editor_state()
         self._update_undo_buttons()
         self._edit_timer.start()
@@ -1122,6 +1159,81 @@ class MainWindow(QMainWindow):
     def _refresh_tau_label(self) -> None:
         self._tau_value.setText(f"{self._tau():.2f}")
 
+    # ── Focus: what the look method reads in the reference ───────────────
+
+    def _reference_zones(self) -> ZonePalette | None:
+        """Zones of the reference, analysed once per reference."""
+        reference = self._reference_zone.image_rgb
+        if reference is None:
+            return None
+        if self._reference_palette is None:
+            self._reference_palette = analyze_zones(reference, DEFAULT_ZONE_COUNT)
+        return self._reference_palette
+
+    def _reference_weights(self) -> NDArray[np.float64] | None:
+        """Per-pixel weights of the reference for the current focus."""
+        focus = self._history.current.focus
+        palette = self._reference_zones() if focus else None
+        if palette is None:
+            return None
+        return zone_weights(palette.labels, dict(focus))
+
+    def _drop_focus(self) -> None:
+        """Forget the zones and the focus of the previous reference."""
+        self._reference_palette = None
+        if self._history.current.focus:
+            self._history.reset(replace(self._history.current, focus=()))
+            self._update_undo_buttons()
+        self._refresh_focus_button()
+
+    def _refresh_focus_button(self) -> None:
+        count = len(self._history.current.focus)
+        self._focus_btn.setText(f"Référence ({count}) ▾" if count else "Référence ▾")
+
+    def _open_focus_menu(self) -> None:
+        menu = self._focus_menu
+        menu.clear()
+        palette = self._reference_zones()
+        if palette is None:
+            menu.addAction("Charge d'abord une image de référence").setEnabled(False)
+        else:
+            focus = dict(self._history.current.focus)
+            for zone in palette.zones:
+                weight = focus.get(zone.id, 1.0)
+                state = {1.0: "", 0.0: " · ignorée"}.get(weight, " · privilégiée")
+                swatch = QPixmap(14, 14)
+                swatch.fill(QColor(zone.hex))
+                sub = menu.addMenu(
+                    QIcon(swatch), f"R{zone.id} — {pct(zone.area)} de l'image{state}"
+                )
+                for label, value in _FOCUS_CHOICES:
+                    action = sub.addAction(label)
+                    action.setCheckable(True)
+                    action.setChecked(weight == value)
+                    action.triggered.connect(partial(self._set_focus, zone.id, value))
+            menu.addSeparator()
+            reset = menu.addAction("Tout remettre au poids normal")
+            reset.setEnabled(bool(focus))
+            reset.triggered.connect(self._clear_focus)
+        menu.popup(self._focus_btn.mapToGlobal(self._focus_btn.rect().topLeft()))
+
+    def _set_focus(self, zone_id: int, weight: float, _checked: bool = False) -> None:
+        focus = dict(self._history.current.focus)
+        if weight == 1.0:
+            focus.pop(zone_id, None)
+        else:
+            focus[zone_id] = weight
+        self._push_focus(tuple(sorted(focus.items())))
+
+    def _clear_focus(self, _checked: bool = False) -> None:
+        self._push_focus(())
+
+    def _push_focus(self, focus: tuple[tuple[int, float], ...]) -> None:
+        if self._history.push(replace(self._history.current, focus=focus)):
+            self._edit_timer.start()
+        self._refresh_focus_button()
+        self._update_undo_buttons()
+
     def _separation(self) -> float:
         return self._separation_slider.value() / _SEPARATION_STEPS
 
@@ -1131,7 +1243,12 @@ class MainWindow(QMainWindow):
     def _update_zone_panel_visibility(self) -> None:
         self._corr_group.setVisible(self._current_method == "zones")
         is_look = self._current_method == "look"
-        for widget in (self._separation_label, self._separation_slider, self._separation_value):
+        for widget in (
+            self._separation_label,
+            self._separation_slider,
+            self._separation_value,
+            self._focus_btn,
+        ):
             widget.setVisible(is_look)
 
     def _update_undo_buttons(self) -> None:
@@ -1141,7 +1258,11 @@ class MainWindow(QMainWindow):
     def _method_key(self) -> str:
         """Model cache key: the method, plus the zone count for zones."""
         method = str(self._algo_combo.currentData())
-        return f"zones:{self._zone_count}" if method == "zones" else method
+        if method == "zones":
+            return f"zones:{self._zone_count}"
+        if method == "look":
+            return f"look:{self._history.current.focus}"
+        return method
 
     def _has_both_images(self) -> bool:
         return self._source_zone.has_image and self._reference_zone.has_image
@@ -1185,6 +1306,7 @@ class MainWindow(QMainWindow):
             prepare=partial(
                 _prepare_model, self._history.current.tau, self._history.current.separation
             ),
+            reference_weights=self._reference_weights(),
         )
         self._transfer_worker.progress.connect(self._on_transfer_progress)
         self._transfer_worker.model_ready.connect(self._on_model_ready)

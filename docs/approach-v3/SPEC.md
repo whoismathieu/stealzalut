@@ -159,7 +159,7 @@ LOW_COLOUR_SHARE = 0.03  # paire n° 6 (source grise) : 0.012 ; cas A : 0.138
 def look_diagnostics(model: LookTransferModel, source: NDArray[np.uint8]) -> LookDiagnostics
 ```
 
-### 3.2. `core/look.py` — poids par zone (T05)
+### 3.2. `core/look.py` — poids par zone (T05, livré)
 ```python
 def zone_weights(labels: NDArray[np.int32], focus: Mapping[int, float]) -> F64
 ```
@@ -213,7 +213,10 @@ focus: tuple[tuple[int, float], ...] = ()   # (zone de référence, poids), T05
 | Infobulle du curseur (livré) | `Écarte les couleurs proches du gris vers les couleurs de la référence.\n0 : seulement la dominante de chaque ton. 1 : ce que montre la référence. Au-delà : accentué.` |
 | Bandeau, source peu colorée (livré) | `La photo a peu de couleurs : la séparation aura peu d'effet.` |
 | Bandeau, tons absents (livré) | `La référence ne montre presque rien dans certains tons : ils gardent leurs couleurs.` |
-| Menu des zones de référence (T05) | `Ignorer cette zone pour le rendu` / `Privilégier cette zone pour le rendu` / `Poids normal` |
+| Bouton des zones de référence (livré) | `Référence ▾`, ou `Référence (2) ▾` quand deux zones ont un poids modifié |
+| Sous-menu d'une zone (livré) | titre `R3 — 18 % de l'image`, suivi de ` · ignorée` ou ` · privilégiée` ; choix `Poids normal` / `Ignorer cette zone pour le rendu` / `Privilégier cette zone pour le rendu` |
+| Bas du menu (livré) | `Tout remettre au poids normal` |
+| Menu sans référence (livré) | `Charge d'abord une image de référence` |
 
 ## 5. Glossaire
 

@@ -611,3 +611,101 @@ class TestLookBanner:
             assert not window._mode_hint_btn.isHidden()
         finally:
             window.stop_workers()
+
+
+class TestLookFocus:
+    """Choosing which zones of the reference the look method reads."""
+
+    def _window(self, qapp: QApplication, settings: Settings, tmp_path: Path) -> Any:
+        banner = TestLookBanner
+        return _look_window(
+            qapp,
+            settings,
+            banner._coloured(tmp_path, "s.png", (60, 60, 160)),
+            banner._coloured(tmp_path, "r.png", (30, 120, 60)),
+        )
+
+    def test_focus_button_only_visible_for_look(
+        self, qapp: QApplication, default_settings: Settings
+    ) -> None:
+        window = MainWindow(settings=default_settings)
+        try:
+            window._algo_combo.setCurrentIndex(window._algo_combo.findData("mkl"))
+            assert window._focus_btn.isHidden()
+            window._algo_combo.setCurrentIndex(window._algo_combo.findData("look"))
+            assert not window._focus_btn.isHidden()
+            assert window._focus_btn.text() == "Référence ▾"
+        finally:
+            window.stop_workers()
+
+    def test_ignoring_a_zone_refits_with_weights(
+        self, qapp: QApplication, default_settings: Settings, tmp_path: Path
+    ) -> None:
+        window = self._window(qapp, default_settings, tmp_path)
+        try:
+            assert window._reference_weights() is None
+            key_before = window._method_key()
+            palette = window._reference_zones()
+            zone_id = palette.zones[0].id
+            with patch.object(window, "_run_transfer_preview"):
+                window._set_focus(zone_id, 0.0)
+            assert window._history.current.focus == ((zone_id, 0.0),)
+            assert window._focus_btn.text() == "Référence (1) ▾"
+            assert window._method_key() != key_before  # the cached model is not reused
+            weights = window._reference_weights()
+            assert weights.shape == (palette.labels.size,)
+            assert np.array_equal(weights == 0.0, palette.labels.ravel() == zone_id)
+
+            window.undo()
+            assert window._history.current.focus == ()
+            assert window._focus_btn.text() == "Référence ▾"
+            assert window._method_key() == key_before
+        finally:
+            window.stop_workers()
+
+    def test_normal_weight_removes_the_zone_from_the_focus(
+        self, qapp: QApplication, default_settings: Settings, tmp_path: Path
+    ) -> None:
+        window = self._window(qapp, default_settings, tmp_path)
+        try:
+            with patch.object(window, "_run_transfer_preview"):
+                window._set_focus(1, 2.0)
+                window._set_focus(2, 0.0)
+                assert window._history.current.focus == ((1, 2.0), (2, 0.0))
+                window._set_focus(1, 1.0)
+                assert window._history.current.focus == ((2, 0.0),)
+                window._clear_focus()
+            assert window._history.current.focus == ()
+        finally:
+            window.stop_workers()
+
+    def test_focus_menu_lists_the_reference_zones(
+        self, qapp: QApplication, default_settings: Settings, tmp_path: Path
+    ) -> None:
+        window = self._window(qapp, default_settings, tmp_path)
+        try:
+            with patch.object(window, "_run_transfer_preview"):
+                window._set_focus(1, 0.0)
+            window._open_focus_menu()
+            window._focus_menu.hide()
+            titles = [a.text() for a in window._focus_menu.actions() if a.menu() is not None]
+            assert len(titles) == len(window._reference_zones().zones)
+            assert titles[0].startswith("R1 — ") and titles[0].endswith(" · ignorée")
+            assert window._focus_menu.actions()[-1].text() == "Tout remettre au poids normal"
+        finally:
+            window.stop_workers()
+
+    def test_a_new_reference_drops_the_focus(
+        self, qapp: QApplication, default_settings: Settings, tmp_path: Path
+    ) -> None:
+        window = self._window(qapp, default_settings, tmp_path)
+        try:
+            with patch.object(window, "_run_transfer_preview"):
+                window._set_focus(1, 0.0)
+                other = TestLookBanner._coloured(tmp_path, "r2.png", (120, 30, 120))
+                window._reference_zone.load_from_path(other)
+            assert window._history.current.focus == ()
+            assert window._reference_palette is None
+            assert window._focus_btn.text() == "Référence ▾"
+        finally:
+            window.stop_workers()

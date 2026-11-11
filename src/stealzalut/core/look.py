@@ -30,6 +30,7 @@ grid cannot fold.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import cast
 
@@ -86,6 +87,8 @@ FAR_PRIOR = 0.05
 VIVID_CHROMA: tuple[float, float] = (0.04, 0.12)
 #: Protection of vivid source colours when the reference has a single hue.
 MONOCHROME_VIVID_PROTECTION = 0.8
+#: Range of the weight of a reference zone (0 = ignored, 1 = normal).
+FOCUS_RANGE: tuple[float, float] = (0.0, 4.0)
 #: Range of the separation setting.
 SEPARATION_RANGE: tuple[float, float] = (0.0, 1.5)
 
@@ -388,6 +391,33 @@ def fit_look(
         band_trust=trust,
         protect_vivid=MONOCHROME_VIVID_PROTECTION if monochrome else 0.0,
     )
+
+
+# ── Reading only part of the reference ───────────────────────────────────────
+
+
+def zone_weights(labels: NDArray[np.int32], focus: Mapping[int, float]) -> F64:
+    """Per-pixel weights of the reference from weights per zone.
+
+    Args:
+        labels: Zone id of every pixel of the reference's analysis copy
+            (:attr:`~stealzalut.core.palette.ZonePalette.labels`).
+        focus: Weight per zone id; zones left out weigh 1.
+
+    Returns:
+        ``labels.size`` weights, row by row, as :func:`fit_look` expects.
+
+    Raises:
+        ValueError: If a weight is outside :data:`FOCUS_RANGE`.
+    """
+    lo, hi = FOCUS_RANGE
+    weights: F64 = np.ones(labels.size, dtype=np.float64)
+    flat = labels.ravel()
+    for zone_id, weight in focus.items():
+        if not lo <= weight <= hi:
+            raise ValueError(f"zone weight {weight} outside [{lo}, {hi}]")
+        weights[flat == zone_id] = weight
+    return weights
 
 
 # ── Diagnostics ──────────────────────────────────────────────────────────────

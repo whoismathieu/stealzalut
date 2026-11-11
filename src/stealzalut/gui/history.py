@@ -30,6 +30,8 @@ class EditState:
         tau: Zone separation.
         finishing: Finishing tools (wheels, curve, colour bands…).
         separation: Separation of the look method.
+        focus: Weights of the reference's zones for the look method, as
+            sorted ``(zone id, weight)`` pairs; zones left out weigh 1.
     """
 
     table: CorrespondenceTable | None
@@ -37,6 +39,7 @@ class EditState:
     tau: float
     finishing: Finishing = field(default_factory=Finishing)
     separation: float = 1.0
+    focus: tuple[tuple[int, float], ...] = ()
 
 
 class History:

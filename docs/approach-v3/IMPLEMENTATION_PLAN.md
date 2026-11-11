@@ -65,30 +65,33 @@ n'est couvert que par un test qui force `band_trust`.
 
 ---
 
-## T05 — Choisir ce que l'on lit dans la référence
+## T05 — Choisir ce que l'on lit dans la référence · **fait**
+`zone_weights`, `FOCUS_RANGE` dans `core/look.py` ; `EditState.focus` ;
+`TransferWorker(reference_weights=…)` ; dans `MainWindow` : bouton `focusButton`
+(« Référence ▾ », visible en méthode `look`), `_open_focus_menu`, `_set_focus`,
+`_clear_focus`, `_reference_zones`, `_reference_weights`, `_drop_focus`. La clé de cache
+du modèle inclut le focus (`look:{focus}`) : changer un poids réajuste le modèle.
+Tests : quatre `test_zone_weights_*` / `test_labels_match_the_analysis_copy` dans
+`tests/test_look.py`, `TestLookFocus` (cinq) dans `tests/test_gui.py`.
 
-**But.** Ignorer ou privilégier des zones de la référence (cadre noir, sujet).
+**Écart par rapport au plan d'origine.** Le plan prévoyait un clic droit dans la vue des
+zones ; cette vue est masquée hors de la méthode `zones`. Le choix se fait donc par un
+bouton « Référence ▾ » placé après le curseur de séparation : un sous-menu par zone
+(pastille de couleur, part de l'image) avec les trois choix de `SPEC.md` §4, et « Tout
+remettre au poids normal ». Les zones sont celles de `analyze_zones(reference, 8)`,
+calculées à la première ouverture du menu.
 
-**Fichiers.** `core/look.py` (`zone_weights`, `SPEC.md` §3.2), `gui/history.py`
-(`focus`), `gui/main_window.py`, `workers/transfer_worker.py`, tests.
+Mesuré sur le cas B (`prototypes/run_p4.py`, planche `out/p4_focus.jpg`) :
 
-**Étapes.**
-1. `zone_weights` + tests (`test_zone_weights_default_is_one`,
-   `test_zone_weights_rejects_out_of_range`, `test_labels_match_the_analysis_copy`).
-2. Les zones de la référence viennent de `analyze_zones(reference, zone_count)`
-   (`core/palette.py`, `analyze_zones(image_rgb, zone_count) -> ZonePalette`, à relire) :
-   les calculer une fois par référence et les garder dans la fenêtre.
-3. `TransferWorker` : nouveau paramètre `reference_weights: NDArray[np.float64] | None =
-   None`, transmis à `fit_look` quand `method == "look"` (dans `_fit`).
-4. La clé de cache du modèle (`_method_key`, ≈ l. 1054) doit inclure le `focus` :
-   `f"look:{focus}"`, sinon un ancien modèle serait réutilisé.
-5. Interface : clic droit sur une zone de la référence dans la vue existante → les trois
-   entrées de `SPEC.md` §4 (poids 0, 2, 1).
+| Focus | L moy. | Chroma | Pixels colorés |
+|---|---|---|---|
+| aucun | 0,301 | 0,105 | 88,5 % |
+| R1 (noirs, 17 % de l'image) ignorée | 0,326 | 0,123 | 96,3 % |
+| R2 (ciel sombre, 31 %) ignorée | 0,325 | 0,110 | 74,9 % |
+| R2 privilégiée | 0,295 | 0,106 | 93,0 % |
 
-**Oracle.** `tests/test_look.py::test_reference_weights_change_what_is_read` (existant)
-montre l'effet attendu au niveau du moteur.
-
-**Ne pas faire.** Pondérer la *source* (non prototypé).
+Reste connu : comme pour la séparation, un export lancé sans modèle en cache réajuste
+sans les poids (`ExportWorker` n'a ni `prepare` ni `reference_weights`).
 
 ---
 

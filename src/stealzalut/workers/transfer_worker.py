@@ -71,6 +71,7 @@ class TransferWorker(QThread):
         model: TransferModel | None = None,
         zone_count: int = DEFAULT_ZONE_COUNT,
         prepare: Callable[[TransferModel], TransferModel] | None = None,
+        reference_weights: NDArray[np.float64] | None = None,
         parent: Any = None,
     ) -> None:
         super().__init__(parent)
@@ -84,6 +85,7 @@ class TransferWorker(QThread):
         self._model = model
         self._zone_count = zone_count
         self._prepare = prepare
+        self._reference_weights = reference_weights
         self._engine = ColorTransferEngine(method=method)
 
     def run(self) -> None:
@@ -129,4 +131,8 @@ class TransferWorker(QThread):
             from stealzalut.core.zone_transfer import fit_zone_transfer
 
             return fit_zone_transfer(self._source, self._reference, self._zone_count)
+        if self._method == "look":
+            from stealzalut.core.look import fit_look
+
+            return fit_look(self._source, self._reference, self._reference_weights)
         return self._engine.fit(self._source, self._reference, method=self._method)

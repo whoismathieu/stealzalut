@@ -21,8 +21,11 @@ from stealzalut.core.look import (
     look_diagnostics,
     sliced_transport,
     weighted_quantile,
+    zone_weights,
 )
 from stealzalut.core.lut_apply import apply_lut
+from stealzalut.core.palette import ANALYSIS_MAX_SIZE, analyze_zones
+from stealzalut.utils.image_io import create_thumbnail
 
 U8 = np.ndarray
 
@@ -294,3 +297,35 @@ def test_diagnostics_list_untrusted_bands(green_model: LookTransferModel) -> Non
     trust[[0, 11]] = 0.1
     diagnostics = look_diagnostics(replace(green_model, band_trust=trust), _neutral_street())
     assert diagnostics.weak_bands == (0, 11)
+
+
+# ── Zone weights ─────────────────────────────────────────────────────────────
+
+
+def test_zone_weights_default_is_one() -> None:
+    labels = np.array([[1, 2], [3, 3]], dtype=np.int32)
+    assert np.array_equal(zone_weights(labels, {}), np.ones(4))
+
+
+def test_zone_weights_follow_the_labels() -> None:
+    labels = np.array([[1, 2], [3, 3]], dtype=np.int32)
+    assert np.array_equal(zone_weights(labels, {2: 0.0, 3: 2.0}), [1.0, 0.0, 2.0, 2.0])
+
+
+def test_zone_weights_rejects_out_of_range() -> None:
+    labels = np.ones((2, 2), dtype=np.int32)
+    with pytest.raises(ValueError, match="zone weight"):
+        zone_weights(labels, {1: 5.0})
+    with pytest.raises(ValueError, match="zone weight"):
+        zone_weights(labels, {1: -0.1})
+
+
+def test_labels_match_the_analysis_copy() -> None:
+    """Zone labels and fit_look must describe the same pixels."""
+    ref = np.repeat(np.repeat(_green_dusk(), 3, axis=0), 3, axis=1)  # larger than the copy
+    palette = analyze_zones(ref, 6)
+    copy = create_thumbnail(ref, ANALYSIS_MAX_SIZE)
+    assert palette.labels.shape == copy.shape[:2]
+    weights = zone_weights(palette.labels, {palette.zones[-1].id: 0.0})
+    model = fit_look(_neutral_street(), ref, reference_weights=weights)
+    assert isinstance(model, LookTransferModel)

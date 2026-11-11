@@ -23,7 +23,7 @@ class Settings:
     lut_output_dir: Path = field(default_factory=lambda: Path.home() / "Documents")
 
     # Color transfer
-    color_transfer_method: str = "mkl"
+    color_transfer_method: str = "look"
 
     # GUI
     app_theme: Literal["dark", "light"] = "dark"
@@ -52,7 +52,7 @@ def load_settings(env_path: Path | None = None) -> Settings:
     return Settings(
         lut_default_size=int(os.getenv("LUT_DEFAULT_SIZE", "33")),
         lut_output_dir=Path(lut_output_raw) if lut_output_raw else Path.home() / "Documents",
-        color_transfer_method=os.getenv("COLOR_TRANSFER_METHOD", "mkl"),
+        color_transfer_method=os.getenv("COLOR_TRANSFER_METHOD", "look"),
         app_theme=os.getenv("APP_THEME", "dark"),  # type: ignore[arg-type]
         preview_max_size=int(os.getenv("PREVIEW_MAX_SIZE", "512")),
         log_level=os.getenv("LOG_LEVEL", "INFO"),

@@ -7,9 +7,9 @@ Branche : `approach-v3` (partie de `main` au commit `fd49d2c`). Rien n'est pouss
 | A. Audit | `docs/audit/AUDIT.md` | **fait** |
 | B. Conception + prototypes | `DESIGN.md`, `prototypes/`, planches dans `prototypes/out/` | **fait** |
 | C. Spécification | `SPEC.md`, `IMPLEMENTATION_PLAN.md`, `ACCEPTANCE.md` | **fait** |
-| D. Implémentation | T01 moteur `core/look.py`, T02 enregistrement, T03 curseur « Séparation » | **fait** (396 tests, `ruff` et `mypy --strict` propres) |
+| D. Implémentation | T01 moteur `core/look.py`, T02 enregistrement, T03 curseur « Séparation », T08 « Rendu » par défaut | **fait** (396 tests, `ruff` et `mypy --strict` propres) |
 | D. Implémentation | T04 limites affichées, T05 poids par zone de référence, T06 recette `look`, T07 pack IA avec rendu | **à faire**, spécifié |
-| — | T08 méthode par défaut, phase 2 (masques à la sortie) | **décision de Mathieu** |
+| — | garder ou retirer « Ambiance », phase 2 (masques à la sortie) | **décision de Mathieu** |
 
 ## Pour reprendre
 

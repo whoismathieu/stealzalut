@@ -68,7 +68,7 @@ Puis dans l'application : méthode « Rendu (tons, dominantes et séparation de 
 référence) », les deux photos, et l'export `.cube` ouvert dans Lightroom ou Resolve.
 
 Réponses attendues de Mathieu, qui débloquent le plan :
-1. `look` devient-il la méthode par défaut ? (T08)
+1. `look` devient-il la méthode par défaut ? **Oui** (2026-11-11, T08 fait).
 2. Le mode `ambiance` peut-il disparaître de la liste ?
 3. La phase 2 (masques à la sortie) vaut-elle d'être tentée ?
 

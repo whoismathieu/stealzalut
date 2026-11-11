@@ -182,10 +182,13 @@ n'a jamais été soumis à une IA.**
 
 ---
 
-## T08 — Méthode par défaut · **décision de Mathieu**
-Si Mathieu valide les planches : `Settings.color_transfer_method = "look"`
-(`src/stealzalut/config.py`, deux occurrences) et mise à jour des tests qui supposent
-`"mkl"` (chercher `color_transfer_method` et `mkl` dans `tests/`).
+## T08 — Méthode par défaut · **fait** (décision de Mathieu du 2026-11-11)
+`Settings.color_transfer_method` vaut `"look"` (`src/stealzalut/config.py`, valeur du
+champ et valeur de repli de `COLOR_TRANSFER_METHOD`), ainsi que `.env.example`.
+
+Piège : le fichier `.env` local (hors Git) fixe `COLOR_TRANSFER_METHOD` et **prime sur
+le code**. Deux tests d'interface supposaient l'ancien défaut ; ils choisissent
+maintenant leur méthode explicitement.
 
 ---
 

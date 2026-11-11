@@ -241,7 +241,7 @@ class TestMainWindow:
         assert "mkl" in algos
         assert "reinhard" in algos
         assert "hm" in algos
-        assert window._algo_combo.currentData() == "mkl"
+        assert window._algo_combo.currentData() == "look"
 
     def test_export_button_enables_when_both_images_loaded(
         self,
@@ -428,6 +428,8 @@ class TestModelCache:
         window = MainWindow(settings=default_settings)
         try:
             with patch.object(window, "_run_transfer_preview"):
+                # A fast global method: the cache is what is tested here
+                window._algo_combo.setCurrentIndex(window._algo_combo.findData("mkl"))
                 window._source_zone.load_from_path(sample_image_path)
                 window._reference_zone.load_from_path(sample_image_path)
 
@@ -475,6 +477,7 @@ class TestSeparationSlider:
     ) -> None:
         window = MainWindow(settings=default_settings)
         try:
+            window._algo_combo.setCurrentIndex(window._algo_combo.findData("mkl"))
             assert window._separation_slider.isHidden()
             window._algo_combo.setCurrentIndex(window._algo_combo.findData("look"))
             assert not window._separation_slider.isHidden()

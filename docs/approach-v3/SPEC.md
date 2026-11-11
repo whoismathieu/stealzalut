@@ -14,12 +14,11 @@
   Aucune tâche ne doit introduire de dépendance de `L'` à la couleur.
 - La couleur est apprise par bande de tons, conditionnellement au ton de sortie.
 - Aucune nouvelle dépendance (ni SciPy, ni onnxruntime). numpy + OpenCV suffisent.
+- `look` est la méthode par défaut (décision de Mathieu du 2026-11-11).
 - Hors ligne, aucune API. Interface en français, code en anglais.
 - Les recettes `.szl` version 2 existantes restent lisibles sans changement.
 
 **Ouvert (décision de Mathieu, ne pas trancher seul)**
-- Faire de `look` la méthode par défaut (aujourd'hui `Settings.color_transfer_method`
-  vaut `"mkl"`, `src/stealzalut/config.py` ligne 26).
 - Retirer ou garder `ambiance` une fois `look` validé visuellement.
 - Phase 2 : sorties avec masques (plusieurs LUT + caches, image gradée).
 - Un réglage « densité » (couleurs saturées plus sombres) : non prototypé.

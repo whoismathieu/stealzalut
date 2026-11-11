@@ -51,3 +51,25 @@ def apply_lut(
 
     result = (np.clip(out, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
     return cast("NDArray[np.uint8]", result.reshape(image_rgb.shape))
+
+
+#: Rows processed at once by :func:`apply_lut_full` (bounds memory use).
+FULL_CHUNK_ROWS = 256
+
+
+def apply_lut_full(
+    image_rgb: NDArray[np.uint8],
+    grid: NDArray[np.float64],
+    size: int,
+) -> NDArray[np.uint8]:
+    """Apply a LUT grid to a full-resolution image, a band of rows at a time.
+
+    Same result as :func:`apply_lut`, without holding float copies of the
+    whole image (a 12 Mpx picture would need more than a gigabyte).
+    """
+    validate_grid_shape(grid, size)
+    out = np.empty_like(image_rgb)
+    for start in range(0, image_rgb.shape[0], FULL_CHUNK_ROWS):
+        band = slice(start, start + FULL_CHUNK_ROWS)
+        out[band] = apply_lut(image_rgb[band], grid, size)
+    return out

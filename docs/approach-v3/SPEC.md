@@ -220,6 +220,9 @@ Une tranche de tons qui couvre moins de 1 % de l'image vaut `null`.
 | Barre d'état après import (livré) | `Recette « {nom} » appliquée en mode Rendu.` ; si l'analyse diffère : `Poids des zones de référence non repris : la recette a été écrite pour d'autres images.` |
 | Menu sans référence (livré) | `Charge d'abord une image de référence` |
 
+| Bandeau, source RAW (livré) | `La source est un fichier RAW : l'aperçu est calculé sur l'image déjà développée par l'appareil. Lightroom et les autres logiciels développent le RAW à leur façon : le .cube n'y donnera pas ces couleurs. Pour retrouver l'aperçu, exporte d'abord la photo de ton logiciel en JPEG ou TIFF sRGB et prends cet export comme source, ou utilise « Exporter l'image… ».` |
+| Bouton d'export de l'image (livré) | `Exporter l'image…` |
+
 ## 5. Glossaire
 
 - **Oklab** : espace couleur perceptuel ; `L` luminosité, `(a, b)` couleur ; chroma `C = √(a² + b²)`.

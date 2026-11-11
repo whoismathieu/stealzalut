@@ -59,6 +59,54 @@ SUPPORTED_EXTENSIONS: frozenset[str] = frozenset(
 )
 
 
+# ── Colour management ────────────────────────────────────────────────────────
+
+
+def _pil_to_srgb(img: Any) -> Any:
+    """Convert a Pillow image carrying a non-sRGB ICC profile to sRGB.
+
+    Phones save their pictures (and the previews embedded in their DNG
+    files) in Display P3.  Reading those values as sRGB mutes every colour
+    and shifts hues, and the engine works in sRGB.  Images without a
+    profile, or already in sRGB, are returned untouched.
+    """
+    icc = img.info.get("icc_profile")
+    if not icc or img.mode not in ("RGB", "RGBA"):
+        return img
+    try:
+        import io
+
+        from PIL import ImageCms
+
+        source = ImageCms.ImageCmsProfile(io.BytesIO(icc))
+        if "srgb" in ImageCms.getProfileDescription(source).lower():
+            return img
+        converted = ImageCms.profileToProfile(
+            img.convert("RGB"), source, ImageCms.createProfile("sRGB"), outputMode="RGB"
+        )
+        return img if converted is None else converted
+    except Exception as exc:
+        logger.debug("ICC conversion to sRGB skipped: %s", exc)
+        return img
+
+
+def _has_wide_gamut_profile(path: Path) -> bool:
+    """True when the file carries an ICC profile that is not sRGB (header read only)."""
+    try:
+        import io
+
+        from PIL import Image, ImageCms
+
+        with Image.open(path) as img:
+            icc = img.info.get("icc_profile")
+            if not icc or img.mode not in ("RGB", "RGBA"):
+                return False
+            description = ImageCms.getProfileDescription(ImageCms.ImageCmsProfile(io.BytesIO(icc)))
+            return "srgb" not in description.lower()
+    except Exception:
+        return False
+
+
 # ── Format-specific decoders ────────────────────────────────────────────────
 
 
@@ -70,7 +118,7 @@ def _load_heic_bgr(path: Path) -> ImageArray:
 
         pillow_heif.register_heif_opener()
         with Image.open(path) as img:
-            transposed = ImageOps.exif_transpose(img)
+            transposed = _pil_to_srgb(ImageOps.exif_transpose(img))
             rgb = np.array(transposed.convert("RGB"), dtype=np.uint8)
             return cast("ImageArray", cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
     except Exception as exc:
@@ -121,7 +169,7 @@ def _try_extract_embedded_preview(raw: Any) -> ImageArray | None:
         thumb_format_jpeg = rawpy.ThumbFormat.JPEG  # type: ignore[attr-defined]
         if getattr(thumb, "format", None) == thumb_format_jpeg and hasattr(thumb, "data"):
             with Image.open(io.BytesIO(thumb.data)) as img:
-                transposed = ImageOps.exif_transpose(img)
+                transposed = _pil_to_srgb(ImageOps.exif_transpose(img))
                 rgb = np.array(transposed.convert("RGB"), dtype=np.uint8)
                 h, w = rgb.shape[:2]
                 # If preview is high-resolution (longest edge >= 1024), use camera's processed image
@@ -228,7 +276,7 @@ def _load_raw_bgr(path: Path, auto_develop: bool = True) -> ImageArray:
             from PIL import Image, ImageOps
 
             with Image.open(path) as img:
-                transposed = ImageOps.exif_transpose(img)
+                transposed = _pil_to_srgb(ImageOps.exif_transpose(img))
                 rgb = np.array(transposed.convert("RGB"), dtype=np.uint8)
                 return cast("ImageArray", cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
         except Exception as exc:
@@ -237,26 +285,28 @@ def _load_raw_bgr(path: Path, auto_develop: bool = True) -> ImageArray:
 
 def _load_standard_bgr(path: Path) -> ImageArray:
     """Load standard image formats using OpenCV with unicode & Pillow fallbacks."""
-    # First attempt: standard cv2 imread
-    image = cv2.imread(str(path), cv2.IMREAD_COLOR)
-    if image is not None:
-        return cast("ImageArray", image)
-
-    # Second attempt: cv2 imdecode from byte buffer (handles accented / non-ASCII Windows paths)
-    try:
-        buf = np.fromfile(str(path), dtype=np.uint8)
-        image = cv2.imdecode(buf, cv2.IMREAD_COLOR)
+    # OpenCV ignores ICC profiles: a Display P3 file goes through Pillow (below)
+    if not _has_wide_gamut_profile(path):
+        # First attempt: standard cv2 imread
+        image = cv2.imread(str(path), cv2.IMREAD_COLOR)
         if image is not None:
             return cast("ImageArray", image)
-    except Exception:
-        pass
+
+        # Second attempt: cv2 imdecode from byte buffer (accented / non-ASCII Windows paths)
+        try:
+            buf = np.fromfile(str(path), dtype=np.uint8)
+            image = cv2.imdecode(buf, cv2.IMREAD_COLOR)
+            if image is not None:
+                return cast("ImageArray", image)
+        except Exception:
+            pass
 
     # Third attempt: Pillow fallback
     try:
         from PIL import Image, ImageOps
 
         with Image.open(path) as img:
-            transposed = ImageOps.exif_transpose(img)
+            transposed = _pil_to_srgb(ImageOps.exif_transpose(img))
             rgb = np.array(transposed.convert("RGB"), dtype=np.uint8)
             return cast("ImageArray", cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
     except Exception as exc:

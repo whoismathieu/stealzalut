@@ -13,6 +13,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
+import cv2
 import numpy as np
 from numpy.typing import NDArray
 from PySide6.QtCore import Qt, QTimer, QUrl
@@ -54,7 +55,7 @@ from stealzalut.config import Settings
 from stealzalut.core.ai_pack import build_prompt, write_pack
 from stealzalut.core.color_transfer import METHOD_LABELS, TransferModel
 from stealzalut.core.correspondence import CorrespondenceTable, Link
-from stealzalut.core.grading import GridResult
+from stealzalut.core.grading import GridResult, build_grid
 from stealzalut.core.look import (
     SEPARATION_RANGE,
     LookDiagnostics,
@@ -63,6 +64,7 @@ from stealzalut.core.look import (
     zone_weights,
 )
 from stealzalut.core.look_pack import write_look_pack
+from stealzalut.core.lut_apply import apply_lut_full
 from stealzalut.core.lut_engine import VALID_LUT_SIZES
 from stealzalut.core.palette import (
     DEFAULT_ZONE_COUNT,
@@ -105,6 +107,7 @@ from stealzalut.gui.widgets.paste_recipe_dialog import PasteRecipeDialog
 from stealzalut.gui.widgets.preview_panel import PreviewPanel
 from stealzalut.gui.widgets.zone_inspector import ZoneInspector
 from stealzalut.gui.zone_text import dominant_colour_name, pct
+from stealzalut.utils.image_io import RAW_EXTENSIONS
 from stealzalut.workers.export_worker import ExportWorker
 from stealzalut.workers.transfer_worker import TransferWorker
 
@@ -114,6 +117,7 @@ logger = logging.getLogger(__name__)
 EDIT_DEBOUNCE_MS = 75
 _TAU_STEPS = 100  # slider units per τ unit
 _SEPARATION_STEPS = 100  # slider units per separation unit
+_JPEG = (".jpg", ".jpeg")
 #: Choices of the focus menu: label, weight of the reference zone.
 _FOCUS_CHOICES: tuple[tuple[str, float], ...] = (
     ("Poids normal", 1.0),
@@ -257,11 +261,16 @@ class MainWindow(QMainWindow):
         self._main_splitter.setSizes([300, 360, 250])
         self._mode_hint = self._build_mode_hint()
         root_layout.addWidget(self._mode_hint)
+        self._source_hint = self._build_source_hint()
+        root_layout.addWidget(self._source_hint)
         root_layout.addWidget(self._main_splitter, stretch=1)
 
         # ── Middle: Controls (Algorithm + LUT size + Export button) ─
         controls_layout = QHBoxLayout()
         controls_layout.setSpacing(12)
+        # Settings of the look method, on their own row (the bottom row is full)
+        look_layout = QHBoxLayout()
+        look_layout.setSpacing(12)
 
         # Algorithm selector
         algo_label = QLabel("Algorithm:")
@@ -286,7 +295,7 @@ class MainWindow(QMainWindow):
         self._separation_label = QLabel("Séparation :")
         self._separation_label.setObjectName("controlLabel")
         self._separation_label.setToolTip(separation_tooltip)
-        controls_layout.addWidget(self._separation_label)
+        look_layout.addWidget(self._separation_label)
         self._separation_slider = QSlider(Qt.Orientation.Horizontal)
         self._separation_slider.setObjectName("separationSlider")
         self._separation_slider.setRange(
@@ -296,11 +305,11 @@ class MainWindow(QMainWindow):
         self._separation_slider.setValue(_SEPARATION_STEPS)
         self._separation_slider.setFixedWidth(140)
         self._separation_slider.setToolTip(separation_tooltip)
-        controls_layout.addWidget(self._separation_slider)
+        look_layout.addWidget(self._separation_slider)
         self._separation_value = QLabel()
         self._separation_value.setObjectName("adjustValue")
         self._separation_value.setMinimumWidth(36)
-        controls_layout.addWidget(self._separation_value)
+        look_layout.addWidget(self._separation_value)
         self._refresh_separation_label()
 
         # What the look method reads in the reference (hidden for other methods).
@@ -313,7 +322,7 @@ class MainWindow(QMainWindow):
         )
         self._focus_menu = QMenu(self)
         self._focus_btn.clicked.connect(self._open_focus_menu)
-        controls_layout.addWidget(self._focus_btn)
+        look_layout.addWidget(self._focus_btn)
 
         # Recipes of the look method (the zones method has its own toolbar)
         self._look_recipe_btn = QPushButton("Recette ▾")
@@ -333,7 +342,7 @@ class MainWindow(QMainWindow):
                 self._look_recipe_btn.mapToGlobal(self._look_recipe_btn.rect().topLeft())
             )
         )
-        controls_layout.addWidget(self._look_recipe_btn)
+        look_layout.addWidget(self._look_recipe_btn)
 
         # LUT size selector
         size_label = QLabel("LUT Size:")
@@ -375,6 +384,17 @@ class MainWindow(QMainWindow):
         self._export_btn.setToolTip("Exporter le fichier 3D LUT (.cube)")
         controls_layout.addWidget(self._export_btn)
 
+        self._export_image_btn = QPushButton("Exporter l'image…")
+        self._export_image_btn.setObjectName("exportImageButton")
+        self._export_image_btn.setEnabled(False)
+        self._export_image_btn.setToolTip(
+            "Enregistrer la photo source avec ce rendu, en pleine résolution :\n"
+            "exactement ce que montre l'aperçu, sans dépendre d'un autre logiciel."
+        )
+        controls_layout.addWidget(self._export_image_btn)
+
+        look_layout.addStretch()
+        root_layout.addLayout(look_layout)
         root_layout.addLayout(controls_layout)
 
         # ── Bottom: Progress bar ─────────────────────────────────────
@@ -522,6 +542,9 @@ class MainWindow(QMainWindow):
 
         # Buttons
         self._export_btn.clicked.connect(self._on_export_clicked)
+        self._export_image_btn.clicked.connect(self._on_export_image_clicked)
+        self._source_zone.image_loaded.connect(self._update_source_hint)
+        self._source_zone.image_cleared.connect(self._update_source_hint)
         self._clear_btn.clicked.connect(self._on_clear_all)
 
         # Algorithm or LUT size changed → the previewed grid changes too
@@ -648,6 +671,90 @@ class MainWindow(QMainWindow):
             return
 
         self._run_export(Path(path))
+
+    def _on_export_image_clicked(self) -> None:
+        """Save the source graded at full resolution (what the preview shows)."""
+        source, reference = self._source_zone.image_rgb, self._reference_zone.image_rgb
+        if source is None or reference is None:
+            return
+        raw_model = self._cached_model(source, reference, self._method_key())
+        if raw_model is None:
+            QMessageBox.information(
+                self,
+                "Rendu pas encore prêt",
+                "Attends que l'aperçu soit calculé, puis réessaie.",
+            )
+            return
+        default = Path(self._settings.lut_output_dir) / f"{self._base_name()}.jpg"
+        path, chosen = QFileDialog.getSaveFileName(
+            self,
+            "Exporter l'image",
+            str(default),
+            "JPEG (*.jpg);;TIFF (*.tif);;PNG (*.png)",
+        )
+        if not path:
+            return
+        target = Path(path)
+        if target.suffix.lower() not in (".jpg", ".jpeg", ".tif", ".tiff", ".png"):
+            target = target.with_suffix({"T": ".tif", "P": ".png"}.get(chosen[:1], ".jpg"))
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            lut_size: int = self._size_combo.currentData()
+            result = build_grid(
+                self._effective_model(raw_model),
+                lut_size,
+                self._adjustments.params(),
+                self._history.current.finishing,
+            )
+            graded = apply_lut_full(source, result.grid, lut_size)
+            options = [cv2.IMWRITE_JPEG_QUALITY, 95] if target.suffix.lower() in _JPEG else []
+            ok, data = cv2.imencode(
+                target.suffix.lower(), cv2.cvtColor(graded, cv2.COLOR_RGB2BGR), options
+            )
+            if not ok:
+                raise OSError(f"encodage {target.suffix} impossible")
+            target.write_bytes(data.tobytes())
+        except OSError as exc:
+            QMessageBox.critical(self, "Image non enregistrée", str(exc))
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+        self._status_bar.showMessage(f"Image enregistrée : {target}")
+
+    # ── Source hint: a RAW file is previewed through its embedded JPEG ────
+
+    def _build_source_hint(self) -> QFrame:
+        bar = QFrame()
+        bar.setObjectName("modeHintBar")
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(10, 6, 6, 6)
+        label = QLabel(
+            "La source est un fichier RAW : l'aperçu est calculé sur l'image déjà développée "
+            "par l'appareil. Lightroom et les autres logiciels développent le RAW à leur "
+            "façon : le .cube n'y donnera pas ces couleurs. Pour retrouver l'aperçu, exporte "
+            "d'abord la photo de ton logiciel en JPEG ou TIFF sRGB et prends cet export comme "
+            "source, ou utilise « Exporter l'image… »."
+        )
+        label.setObjectName("modeHintLabel")
+        label.setWordWrap(True)
+        layout.addWidget(label, stretch=1)
+        close = QToolButton()
+        close.setText("×")
+        close.setObjectName("modeHintClose")
+        close.setToolTip("Masquer")
+        close.clicked.connect(bar.hide)
+        layout.addWidget(close)
+        bar.hide()
+        return bar
+
+    def _update_source_hint(self, _image: Any = None) -> None:
+        path = self._source_zone.image_path
+        is_raw = (
+            self._source_zone.has_image
+            and path is not None
+            and path.suffix.lower() in RAW_EXTENSIONS
+        )
+        self._source_hint.setVisible(is_raw)
 
     # ── Correspondence editor ────────────────────────────────────────────
 
@@ -1666,6 +1773,7 @@ class MainWindow(QMainWindow):
         )
         is_enabled = both_loaded and not_exporting
         self._export_btn.setEnabled(is_enabled)
+        self._export_image_btn.setEnabled(both_loaded)
 
     def stop_workers(self, timeout_ms: int = 3000) -> None:
         """Wait for any running background workers to finish."""

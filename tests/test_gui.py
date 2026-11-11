@@ -13,7 +13,7 @@ import cv2
 import numpy as np
 import pytest
 from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLabel
 
 from stealzalut.config import Settings
 from stealzalut.core.look import LookTransferModel
@@ -903,6 +903,109 @@ class TestWindowLookPack:
             window._algo_combo.setCurrentIndex(window._algo_combo.findData("look"))
             with patch("stealzalut.gui.main_window.QMessageBox.information") as information:
                 window._on_prepare_look_pack()
+            assert information.call_args.args[1] == "Rendu pas encore prêt"
+        finally:
+            window.stop_workers()
+
+
+class TestSourceFidelity:
+    """What the preview shows is what can be exported, and RAW sources are flagged."""
+
+    def test_raw_source_is_flagged(
+        self, qapp: QApplication, default_settings: Settings, sample_image_path: Path
+    ) -> None:
+        window = MainWindow(settings=default_settings)
+        try:
+            with patch.object(window, "_run_transfer_preview"):
+                window._source_zone.load_from_path(sample_image_path)
+            assert window._source_hint.isHidden()  # a PNG is what it looks like
+
+            window._source_zone._image_path = Path("IMG_0001.DNG")
+            window._update_source_hint()
+            assert not window._source_hint.isHidden()
+            text = window._source_hint.findChild(QLabel, "modeHintLabel").text()
+            assert "fichier RAW" in text and "Exporter l'image" in text
+
+            window._source_zone.clear_image()
+            assert window._source_hint.isHidden()
+        finally:
+            window.stop_workers()
+
+    def test_export_image_writes_the_preview_at_full_size(
+        self,
+        qapp: QApplication,
+        default_settings: Settings,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from PySide6.QtWidgets import QFileDialog
+
+        from stealzalut.core.grading import build_grid
+        from stealzalut.core.lut_apply import apply_lut
+
+        window = _look_window(
+            qapp,
+            default_settings,
+            TestLookBanner._coloured(tmp_path, "s.png", (60, 60, 160)),
+            TestLookBanner._coloured(tmp_path, "r.png", (30, 120, 60)),
+        )
+        try:
+            assert window._export_image_btn.isEnabled()
+            target = tmp_path / "graded.png"
+            monkeypatch.setattr(
+                QFileDialog, "getSaveFileName", lambda *a, **k: (str(target), "PNG (*.png)")
+            )
+            with patch.object(window, "_run_transfer_preview"):
+                window._separation_slider.setValue(130)
+            window._on_export_image_clicked()
+
+            written = cv2.cvtColor(cv2.imread(str(target)), cv2.COLOR_BGR2RGB)
+            source = window._source_zone.image_rgb
+            model = window._effective_model(window._model_cache[3])
+            assert model.separation == 1.3
+            grid = build_grid(model, 33, window._adjustments.params()).grid
+            assert written.shape == source.shape
+            assert np.array_equal(written, apply_lut(source, grid, 33))
+        finally:
+            window.stop_workers()
+
+    def test_export_image_adds_a_missing_extension(
+        self,
+        qapp: QApplication,
+        default_settings: Settings,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from PySide6.QtWidgets import QFileDialog
+
+        window = _look_window(
+            qapp,
+            default_settings,
+            TestLookBanner._coloured(tmp_path, "s.png", (60, 60, 160)),
+            TestLookBanner._coloured(tmp_path, "r.png", (30, 120, 60)),
+        )
+        try:
+            monkeypatch.setattr(
+                QFileDialog,
+                "getSaveFileName",
+                lambda *a, **k: (str(tmp_path / "graded"), "TIFF (*.tif)"),
+            )
+            window._on_export_image_clicked()
+            assert (tmp_path / "graded.tif").exists()
+        finally:
+            window.stop_workers()
+
+    def test_export_image_needs_a_render(
+        self, qapp: QApplication, default_settings: Settings, sample_image_path: Path
+    ) -> None:
+        window = MainWindow(settings=default_settings)
+        try:
+            assert not window._export_image_btn.isEnabled()
+            with patch.object(window, "_run_transfer_preview"):
+                window._source_zone.load_from_path(sample_image_path)
+                window._reference_zone.load_from_path(sample_image_path)
+            with patch("stealzalut.gui.main_window.QMessageBox.information") as information:
+                window._on_export_image_clicked()
             assert information.call_args.args[1] == "Rendu pas encore prêt"
         finally:
             window.stop_workers()

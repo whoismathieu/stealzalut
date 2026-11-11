@@ -192,6 +192,55 @@ maintenant leur méthode explicitement.
 
 ---
 
+## T09 — L'aperçu et le logiciel hôte ne voient pas la même image · **fait en partie**
+
+**Constat (2026-11-12, paire de Mathieu : `IMG_6295.DNG` × `photo-1615723702352-…jpg`).**
+Le `.cube` appliqué dans Lightroom ne donne pas les couleurs de l'aperçu. Mesuré :
+- le fichier `.cube` relu et réappliqué à l'image de l'application donne **0 écart au
+  pixel près** avec l'aperçu : l'export n'est pas en cause ;
+- pour un DNG, l'application travaille sur le **JPEG intégré** (déjà développé par
+  l'appareil) ; Lightroom applique la LUT sur **son propre développement** du brut.
+  Entre le JPEG intégré et un développement LibRaw du même fichier : luminosité moyenne
+  0,426 → 0,343, chroma moyenne 0,031 → 0,021. Une LUT est une fonction de la couleur
+  d'entrée : entrée différente, résultat différent. **Ce n'est pas une limite du `.cube`.**
+- le JPEG intégré est en **Display P3** et était lu comme du sRGB.
+
+**Fait.**
+- `utils/image_io.py` : `_pil_to_srgb`, `_has_wide_gamut_profile`. Toute image portant
+  un profil ICC non sRGB (JPEG, HEIC, aperçu intégré d'un DNG) est convertie en sRGB au
+  chargement. Les images sans profil ou en sRGB suivent le même chemin qu'avant.
+- `core/lut_apply.py` : `apply_lut_full(image_rgb, grid, size)` (par bandes de 256
+  lignes, même résultat que `apply_lut`).
+- `MainWindow` : bandeau `_source_hint` quand la source est un fichier RAW ; bouton
+  « Exporter l'image… » (`_on_export_image_clicked`) qui enregistre la source gradée en
+  pleine résolution (JPEG qualité 95, TIFF ou PNG, 8 bits) avec la grille de l'état
+  courant. Vérifié sur le DNG réel : 12 Mpx en 5,8 s, écart moyen avec l'aperçu de
+  1 niveau sur 255 (redimensionnement et JPEG compris).
+- Les réglages du mode Rendu (séparation, référence, recette) sont sur leur propre
+  ligne : la barre du bas débordait à 1280 px de large.
+- Tests : `tests/test_input_fidelity.py` (9), `TestSourceFidelity` (4) dans
+  `tests/test_gui.py`.
+
+**Non vérifié.**
+- La conversion P3 → sRGB est testée par son câblage (la conversion est bien appelée),
+  pas par une valeur de couleur : Pillow ne sait pas fabriquer un profil P3 pour un
+  test. Mesure sur le DNG réel : chroma moyenne de la source 0,031 → 0,035.
+- Que charger un export sRGB de Lightroom comme source donne bien, dans Lightroom,
+  les couleurs de l'aperçu. Cela dépend de l'endroit où Lightroom applique la LUT d'un
+  profil et de l'espace couleur choisi à la création du profil. **À vérifier par
+  Mathieu avec un export réel** avant d'écrire quoi que ce soit de plus dans l'aide.
+
+**Reste possible.** Développer soi-même le brut ne résout rien (aucun développement
+tiers n'égale celui d'Adobe). L'export de l'image en 16 bits demanderait une source
+16 bits, que l'application n'a pas (tout est en sRGB 8 bits).
+
+**Effet sur les oracles.** `IMG_6295.DNG` étant en P3, ses mesures ont légèrement bougé
+(source : 15,9 % de pixels colorés au lieu de 13,8 % ; cas A : chroma 0,046, pixels
+colorés 29,5 % ; cas B : inchangé à 0,001 près). Tout reste dans les tolérances de
+`ACCEPTANCE.md`. Pour T04, la part colorée de la source vaut maintenant 0,159.
+
+---
+
 ## Phase 2 — non planifiée
 Sorties avec masques (une LUT par région + caches PNG, ou image gradée). Préalable :
 une segmentation fiable (pinceau, ou modèle ONNX optionnel avec licence vérifiée) et une

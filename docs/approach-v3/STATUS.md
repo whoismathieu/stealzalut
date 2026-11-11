@@ -25,8 +25,7 @@ Branche : `approach-v3` (partie de `main` au commit `fd49d2c`). Rien n'est pouss
 - Sans compandage de la chroma, le treillis est trop grossier près du gris et la
   séparation disparaît.
 - `weighted_quantile` doit écarter les poids nuls avant d'interpoler.
-- Écrire `
-` dans un script de correctif passé par un *heredoc* a produit un vrai saut
+- Écrire un saut de ligne échappé (barre oblique inverse + n) dans un script de correctif passé par un *heredoc* a produit un vrai saut
   de ligne dans une chaîne Python : préférer l'outil d'édition.
 
 ## Non vérifié

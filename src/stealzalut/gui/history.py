@@ -29,12 +29,14 @@ class EditState:
         params: Adjustment sliders.
         tau: Zone separation.
         finishing: Finishing tools (wheels, curve, colour bands…).
+        separation: Separation of the look method.
     """
 
     table: CorrespondenceTable | None
     params: GradingParams
     tau: float
     finishing: Finishing = field(default_factory=Finishing)
+    separation: float = 1.0
 
 
 class History:

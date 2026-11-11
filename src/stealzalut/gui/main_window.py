@@ -47,6 +47,7 @@ from stealzalut.core.ai_pack import build_prompt, write_pack
 from stealzalut.core.color_transfer import METHOD_LABELS, TransferModel
 from stealzalut.core.correspondence import CorrespondenceTable, Link
 from stealzalut.core.grading import GridResult
+from stealzalut.core.look import SEPARATION_RANGE, LookTransferModel
 from stealzalut.core.lut_engine import VALID_LUT_SIZES
 from stealzalut.core.palette import (
     DEFAULT_ZONE_COUNT,
@@ -92,6 +93,7 @@ logger = logging.getLogger(__name__)
 #: Delay between a correspondence edit and the preview refresh.
 EDIT_DEBOUNCE_MS = 75
 _TAU_STEPS = 100  # slider units per τ unit
+_SEPARATION_STEPS = 100  # slider units per separation unit
 _IDLE_MESSAGE = "Charge une source et une référence pour voir leurs zones."
 _ANALYSING_MESSAGE = "Analyse des zones de couleur…"
 
@@ -244,6 +246,32 @@ class MainWindow(QMainWindow):
         if default_algo_idx >= 0:
             self._algo_combo.setCurrentIndex(default_algo_idx)
         controls_layout.addWidget(self._algo_combo)
+
+        # Separation of the look method (hidden for the other methods)
+        separation_tooltip = (
+            "Écarte les couleurs proches du gris vers les couleurs de la référence.\n"
+            "0 : seulement la dominante de chaque ton. 1 : ce que montre la référence. "
+            "Au-delà : accentué."
+        )
+        self._separation_label = QLabel("Séparation :")
+        self._separation_label.setObjectName("controlLabel")
+        self._separation_label.setToolTip(separation_tooltip)
+        controls_layout.addWidget(self._separation_label)
+        self._separation_slider = QSlider(Qt.Orientation.Horizontal)
+        self._separation_slider.setObjectName("separationSlider")
+        self._separation_slider.setRange(
+            round(SEPARATION_RANGE[0] * _SEPARATION_STEPS),
+            round(SEPARATION_RANGE[1] * _SEPARATION_STEPS),
+        )
+        self._separation_slider.setValue(_SEPARATION_STEPS)
+        self._separation_slider.setFixedWidth(140)
+        self._separation_slider.setToolTip(separation_tooltip)
+        controls_layout.addWidget(self._separation_slider)
+        self._separation_value = QLabel()
+        self._separation_value.setObjectName("adjustValue")
+        self._separation_value.setMinimumWidth(36)
+        controls_layout.addWidget(self._separation_value)
+        self._refresh_separation_label()
 
         # LUT size selector
         size_label = QLabel("LUT Size:")
@@ -447,6 +475,7 @@ class MainWindow(QMainWindow):
         self._inspector.link_changed.connect(self._on_link_edited)
         self._zone_count_spin.valueChanged.connect(self._on_zone_count_changed)
         self._tau_slider.valueChanged.connect(self._on_tau_changed)
+        self._separation_slider.valueChanged.connect(self._on_separation_changed)
         self._all_auto_btn.clicked.connect(self._on_all_auto)
         self._ai_pack_btn.clicked.connect(self._on_prepare_ai_pack)
         self._paste_action.triggered.connect(self._on_paste_recipe)
@@ -689,7 +718,8 @@ class MainWindow(QMainWindow):
         # Only the finishing settings the recipe gives replace the current ones
         # (an AI sets saturation / vibrance, the user's wheels and curve stay)
         finishing = merge_finishing(recipe, self._history.current.finishing)
-        state = EditState(table, params, tau, finishing)
+        separation = self._history.current.separation
+        state = EditState(table, params, tau, finishing, separation)
         if self._history.push(state):
             self._restore(state)
         title = f"« {recipe.name} »" if recipe.name else "importée"
@@ -707,7 +737,7 @@ class MainWindow(QMainWindow):
         dose = colour_dose(table, params, areas)
         if dose < LOW_COLOUR_DOSE and self._ask_low_dose(dose, table, params):
             full_table, full_params = full_dose(table, params)
-            boosted = EditState(full_table, full_params, tau, finishing)
+            boosted = EditState(full_table, full_params, tau, finishing, separation)
             if self._history.push(boosted):  # its own undo step: Ctrl+Z = recipe dose
                 self._restore(boosted)
             note += " Dosée à 100 % (Ctrl+Z pour revenir au dosage de la recette)."
@@ -724,7 +754,8 @@ class MainWindow(QMainWindow):
             return False
         current = self._history.current
         params, tau = apply_global(recipe, current.params, current.tau)
-        state = EditState(None, params, tau, merge_finishing(recipe, current.finishing))
+        finishing = merge_finishing(recipe, current.finishing)
+        state = EditState(None, params, tau, finishing, current.separation)
         if self._history.push(state):
             self._restore(state)
         title = f"« {recipe.name} »" if recipe.name else "importée"
@@ -913,6 +944,13 @@ class MainWindow(QMainWindow):
             self._edit_timer.start()
         self._update_undo_buttons()
 
+    def _on_separation_changed(self, _value: int) -> None:
+        self._refresh_separation_label()
+        state = replace(self._history.current, separation=self._separation())
+        if self._history.push(state, "separation"):
+            self._edit_timer.start()
+        self._update_undo_buttons()
+
     def undo(self) -> None:
         """Undo the last correspondence or slider change."""
         state = self._history.undo()
@@ -934,6 +972,10 @@ class MainWindow(QMainWindow):
         self._tau_slider.setValue(round(state.tau * _TAU_STEPS))
         self._tau_slider.blockSignals(False)
         self._refresh_tau_label()
+        self._separation_slider.blockSignals(True)
+        self._separation_slider.setValue(round(state.separation * _SEPARATION_STEPS))
+        self._separation_slider.blockSignals(False)
+        self._refresh_separation_label()
         self._show_editor_state()
         self._update_undo_buttons()
         self._edit_timer.start()
@@ -1029,10 +1071,12 @@ class MainWindow(QMainWindow):
         return answer == QMessageBox.StandardButton.Yes
 
     def _effective_model(self, model: TransferModel) -> TransferModel:
-        """*model* with the user's correspondences and zone separation."""
+        """*model* with the user's correspondences and separation settings."""
+        state = self._history.current
+        if isinstance(model, LookTransferModel):
+            return model.with_separation(state.separation)
         if not isinstance(model, ZoneTransferModel):
             return model
-        state = self._history.current
         table = state.table
         if table is None or not table.is_compatible(model.source.ids, model.reference.ids):
             table = model.table
@@ -1044,8 +1088,17 @@ class MainWindow(QMainWindow):
     def _refresh_tau_label(self) -> None:
         self._tau_value.setText(f"{self._tau():.2f}")
 
+    def _separation(self) -> float:
+        return self._separation_slider.value() / _SEPARATION_STEPS
+
+    def _refresh_separation_label(self) -> None:
+        self._separation_value.setText(f"{self._separation():.2f}")
+
     def _update_zone_panel_visibility(self) -> None:
         self._corr_group.setVisible(self._current_method == "zones")
+        is_look = self._current_method == "look"
+        for widget in (self._separation_label, self._separation_slider, self._separation_value):
+            widget.setVisible(is_look)
 
     def _update_undo_buttons(self) -> None:
         self._undo_btn.setEnabled(self._history.can_undo)
@@ -1095,7 +1148,9 @@ class MainWindow(QMainWindow):
             finishing=self._history.current.finishing,
             model=model,
             zone_count=self._zone_count,
-            prepare=partial(_with_tau, self._history.current.tau),
+            prepare=partial(
+                _prepare_model, self._history.current.tau, self._history.current.separation
+            ),
         )
         self._transfer_worker.progress.connect(self._on_transfer_progress)
         self._transfer_worker.model_ready.connect(self._on_model_ready)
@@ -1271,9 +1326,10 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
 
-def _with_tau(tau: float, model: TransferModel) -> TransferModel:
-    """Apply the zone separation to a freshly fitted zones model."""
+def _prepare_model(tau: float, separation: float, model: TransferModel) -> TransferModel:
+    """Apply the user's separation settings to a freshly fitted model."""
     if isinstance(model, ZoneTransferModel):
         return model.with_params(ZoneBakeParams(tau=tau))
+    if isinstance(model, LookTransferModel):
+        return model.with_separation(separation)
     return model
-

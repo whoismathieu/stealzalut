@@ -21,7 +21,7 @@ Pièges connus :
 - polices réglées par feuille de style + `QPushButton.setMenu()` → avertissement
   `QFont::setPointSize` : ouvre les menus à la main comme le fait le menu « Importer » ;
 - `EditState` est construit positionnellement à plusieurs endroits de `main_window.py`
-  (`EditState(table, params, tau, finishing)`) : n'ajoute des champs qu'**à la fin, avec
+  (`EditState(table, params, tau, finishing, separation)`) : n'ajoute des champs qu'**à la fin, avec
   une valeur par défaut**.
 
 ---
@@ -34,43 +34,16 @@ Pièges connus :
 
 ---
 
-## T03 — Curseur « Séparation » dans l'interface
+## T03 — Curseur « Séparation » dans l'interface · **fait**
+`EditState.separation`, curseur `separationSlider` à côté de la liste des méthodes
+(visible seulement en méthode `look`), `MainWindow._effective_model` et
+`_prepare_model` (remplace `_with_tau`), annulation. Tests : `TestSeparationSlider`
+(3 tests) dans `tests/test_gui.py`.
 
-**But.** Régler `LookTransferModel.separation` sans réajuster le modèle, avec annulation.
-
-**Fichiers.** `gui/history.py`, `gui/main_window.py`, `tests/test_gui.py`.
-
-**À lire d'abord.** `main_window.py` : `_tau_slider` (≈ l. 326–346), `_on_tau_changed`
-(≈ l. 909), `_restore_state` (≈ l. 925–940), `_effective_model` (≈ l. 1031),
-`_run_transfer_preview` (≈ l. 1068), l'export (≈ l. 1186–1210), `_with_tau` (fin de
-fichier), et la ligne `self._corr_group.setVisible(self._current_method == "zones")`.
-
-**Étapes.**
-1. `EditState` : ajouter `separation: float = 1.0` après `finishing`.
-2. Créer, à côté du curseur « Transitions », un `QSlider` horizontal `objectName
-   "separationSlider"`, plage 0–150, valeur 100, largeur fixe 160, précédé du libellé
-   `Séparation :` et suivi d'un `QLabel` de valeur (`f"{v:.2f}"`). Infobulle : `SPEC.md` §4.
-3. Les trois widgets ne sont visibles que si `self._current_method == "look"` (même
-   endroit que la visibilité de `_corr_group`).
-4. `valueChanged` → `self._history.push(replace(self._history.current,
-   separation=valeur / 100), "separation")` puis relance de l'aperçu, exactement comme
-   `_on_tau_changed`.
-5. `_effective_model` : si `isinstance(model, LookTransferModel)`, retourner
-   `model.with_separation(state.separation)`.
-6. Remplacer `_with_tau(tau, model)` par `_prepare_model(tau, separation, model)` qui
-   traite les deux types ; l'utiliser dans `_run_transfer_preview` **et** dans l'export.
-7. `_restore_state` : remettre le curseur (signaux bloqués) à `state.separation`.
-
-**Tests à écrire** (`tests/test_gui.py`, même style que les tests du curseur tau) :
-- `test_separation_slider_only_visible_for_look`
-- `test_separation_slider_changes_the_model` (après changement, `_effective_model` rend
-  un modèle dont `separation == 0.5`)
-- `test_separation_is_undoable`
-
-**Ne pas faire.** Réajuster le modèle quand le curseur bouge ; toucher à `GradingParams`.
-
-**Terminé quand.** Les trois tests passent ; `prototypes/smoke_look_gui.py` s'exécute
-sans ligne `QFont::setPointSize`.
+Reste connu : si l'export est lancé alors qu'aucun modèle n'est en cache (cas rare :
+l'aperçu précède toujours l'export), `ExportWorker` réajuste le modèle sans appliquer la
+séparation. `ExportWorker` n'a pas de paramètre `prepare` ; lui en donner un, sur le
+modèle de `TransferWorker`, corrige ce cas.
 
 ---
 

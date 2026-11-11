@@ -465,3 +465,54 @@ class TestModelCache:
             assert calls == ["fit", "fit"]
         finally:
             window.stop_workers()
+
+
+class TestSeparationSlider:
+    """The separation slider of the look method."""
+
+    def test_separation_slider_only_visible_for_look(
+        self, qapp: QApplication, default_settings: Settings
+    ) -> None:
+        window = MainWindow(settings=default_settings)
+        try:
+            assert window._separation_slider.isHidden()
+            window._algo_combo.setCurrentIndex(window._algo_combo.findData("look"))
+            assert not window._separation_slider.isHidden()
+            assert not window._separation_label.isHidden()
+            window._algo_combo.setCurrentIndex(window._algo_combo.findData("oklab"))
+            assert window._separation_slider.isHidden()
+        finally:
+            window.stop_workers()
+
+    def test_separation_slider_changes_the_model(
+        self, qapp: QApplication, default_settings: Settings
+    ) -> None:
+        from stealzalut.core.look import LookTransferModel, fit_look
+
+        rng = np.random.default_rng(0)
+        src = rng.integers(0, 255, (48, 48, 3), dtype=np.uint8)
+        ref = rng.integers(0, 255, (48, 48, 3), dtype=np.uint8)
+        window = MainWindow(settings=default_settings)
+        try:
+            window._algo_combo.setCurrentIndex(window._algo_combo.findData("look"))
+            window._separation_slider.setValue(50)
+            assert window._separation_value.text() == "0.50"
+            model = window._effective_model(fit_look(src, ref))
+            assert isinstance(model, LookTransferModel)
+            assert model.separation == 0.5
+        finally:
+            window.stop_workers()
+
+    def test_separation_is_undoable(
+        self, qapp: QApplication, default_settings: Settings
+    ) -> None:
+        window = MainWindow(settings=default_settings)
+        try:
+            window._algo_combo.setCurrentIndex(window._algo_combo.findData("look"))
+            window._separation_slider.setValue(130)
+            assert window._history.current.separation == 1.3
+            window.undo()
+            assert window._history.current.separation == 1.0
+            assert window._separation_slider.value() == 100
+        finally:
+            window.stop_workers()

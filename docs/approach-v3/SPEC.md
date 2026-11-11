@@ -51,8 +51,8 @@
 | `create_thumbnail` | `utils/image_io.py` | `create_thumbnail(image: ImageArray, max_size: int = 512) -> ImageArray` |
 | `Recipe`, `parse_recipe`, `apply_global`, `recipe_to_dict`, `RECIPE_MODES`, `RecipeError` | `core/recipe.py` | `Recipe` : `analysis_id`, `name`, `description`, `grading: dict[str, float]`, `tau`, `zone_count`, `links`, `finishing`, `finishing_keys`, `mode` ; `parse_recipe(source: str \| dict[str, Any]) -> Recipe` ; `apply_global(recipe, params, tau) -> tuple[GradingParams, float]` ; `RECIPE_MODES = ("zones", "ambiance")` |
 | `write_pack`, `build_prompt`, `PACK_FILES`, `_PROMPT` | `core/ai_pack.py` | `write_pack(destination: Path, name: str, source_rgb, reference_rgb, model: ZoneTransferModel, zone_count: int) -> Path` ; `build_prompt(model: ZoneTransferModel) -> str` |
-| `EditState`, `History.push` | `gui/history.py` | `EditState(table: CorrespondenceTable \| None, params: GradingParams, tau: float, finishing: Finishing = Finishing())` ; `push(self, state: EditState, merge_key: str \| None = None) -> bool` |
-| `MainWindow._effective_model`, `_with_tau`, `_run_transfer_preview`, `_tau_slider` | `gui/main_window.py` | lignes ~1031, ~1274, ~1068, ~335 ; lis-les avant de les toucher |
+| `EditState`, `History.push` | `gui/history.py` | `EditState(table: CorrespondenceTable \| None, params: GradingParams, tau: float, finishing: Finishing = Finishing(), separation: float = 1.0)` ; `push(self, state: EditState, merge_key: str \| None = None) -> bool` |
+| `MainWindow._effective_model`, `_prepare_model`, `_run_transfer_preview`, `_tau_slider`, `_separation_slider` | `gui/main_window.py` | cherche-les par leur nom (les numéros de ligne bougent) et lis-les avant de les toucher |
 | `TransferWorker` | `workers/transfer_worker.py` | paramètre `prepare: Callable[[TransferModel], TransferModel] \| None` appliqué après l'ajustement |
 
 ## 2. Module livré : `src/stealzalut/core/look.py`
@@ -170,9 +170,8 @@ ligne. Poids hors de [0 ; 4] → `ValueError`. `labels` vient de
 un test que `labels.size == create_thumbnail(reference, 256).shape[0] * shape[1]`).
 
 ### 3.3. `gui/history.py` — état (T03)
-Ajouter à `EditState`, **après** `finishing`, pour ne casser aucun appel positionnel :
+`EditState` a déjà `separation: float = 1.0` après `finishing` (T03, fait). Ajouter à la suite :
 ```python
-separation: float = 1.0
 focus: tuple[tuple[int, float], ...] = ()   # (zone de référence, poids), T05
 ```
 
@@ -210,9 +209,9 @@ focus: tuple[tuple[int, float], ...] = ()   # (zone de référence, poids), T05
 
 | Où | Texte |
 |---|---|
-| Liste des méthodes (livré) | `Rendu (tons, dominantes et séparation de la référence)` |
-| Libellé du curseur (T03) | `Séparation :` |
-| Infobulle du curseur (T03) | `Écarte les couleurs proches du gris vers les couleurs de la référence.\n0 : seulement la dominante de chaque ton. 1 : ce que montre la référence. Au-delà : accentué.` |
+| Liste des méthodes (livré) | `Rendu (tons et couleurs de la référence)` |
+| Libellé du curseur (livré) | `Séparation :` |
+| Infobulle du curseur (livré) | `Écarte les couleurs proches du gris vers les couleurs de la référence.\n0 : seulement la dominante de chaque ton. 1 : ce que montre la référence. Au-delà : accentué.` |
 | Bandeau, source peu colorée (T04) | `La photo a peu de couleurs : la séparation aura peu d'effet.` |
 | Bandeau, tons absents (T04) | `La référence ne montre presque rien dans certains tons : ils gardent leurs couleurs.` |
 | Menu des zones de référence (T05) | `Ignorer cette zone pour le rendu` / `Privilégier cette zone pour le rendu` / `Poids normal` |

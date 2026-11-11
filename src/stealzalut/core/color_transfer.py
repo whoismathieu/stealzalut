@@ -68,7 +68,7 @@ SUPPORTED_METHODS: tuple[str, ...] = (
 )
 
 METHOD_LABELS: dict[str, str] = {
-    "look": "Rendu (tons, dominantes et séparation de la référence)",
+    "look": "Rendu (tons et couleurs de la référence)",
     "zones": "Zones (correspondances par zone de couleur)",
     "ambiance": "Ambiance (dominante par tons, références monochromes)",
     "oklab": "Oklab (luminance / couleur séparées)",

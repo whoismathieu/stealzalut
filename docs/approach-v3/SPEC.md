@@ -191,18 +191,18 @@ focus: tuple[tuple[int, float], ...] = ()   # (zone de référence, poids), T05
   - `"« look.focus » : le poids de {clé} doit être un nombre entre 0 et 4."`
   - `"« look.focus » : « {clé} » n'est pas une zone de la référence (R1 à R{n})."`
 
-### 3.5. `core/ai_pack.py` — pack du mode `look` (T07)
-- Nouveau fichier de pack `7_current_render.jpg` (rendu actuel, ≤ 1600 px, qualité 90).
-- `analysis.json` gagne une clé `"look"` :
+### 3.5. `core/look_pack.py` — pack du mode `look` (T07, livré)
+Module séparé ; signatures et contenu : voir `IMPLEMENTATION_PLAN.md`, T07. Clé `"look"`
+de `analysis.json` :
 ```json
-"look": { "separation": 1.0, "protect_vivid": 0.0,
-  "gaps": { "lightness_mean": [0.296, 0.280], "chroma_mean": [0.045, 0.053],
-            "colourful_share": [0.282, 0.434],
-            "shadows_ab": [[-0.031, 0.015], [-0.032, 0.015]] } }
+"look": { "separation": 1.0, "protect_vivid": 0.0, "focus": { "R1": 0.0 },
+  "gaps": { "render":    { "lightness_mean": 0.297, "chroma_mean": 0.045,
+                           "colourful_share": 0.26,
+                           "shadows": { "share": 0.75, "hex": "#07190d", "ab": [-0.031, 0.015] },
+                           "midtones": { … }, "highlights": { … } },
+            "reference": { … même forme … } } }
 ```
-  Chaque paire est `[rendu, référence]`, calculée sur des vignettes de 640 px ;
-  « ombres » = pixels de L < 0,35 ; « colorés » = C ≥ 0,05.
-- Texte du prompt du mode `look` : voir `IMPLEMENTATION_PLAN.md`, T07 (mot pour mot).
+Une tranche de tons qui couvre moins de 1 % de l'image vaut `null`.
 
 ## 4. Textes d'interface (mot pour mot)
 
@@ -216,7 +216,7 @@ focus: tuple[tuple[int, float], ...] = ()   # (zone de référence, poids), T05
 | Bouton des zones de référence (livré) | `Référence ▾`, ou `Référence (2) ▾` quand deux zones ont un poids modifié |
 | Sous-menu d'une zone (livré) | titre `R3 — 18 % de l'image`, suivi de ` · ignorée` ou ` · privilégiée` ; choix `Poids normal` / `Ignorer cette zone pour le rendu` / `Privilégier cette zone pour le rendu` |
 | Bas du menu (livré) | `Tout remettre au poids normal` |
-| Bouton des recettes en mode Rendu (livré) | `Recette ▾` : `Coller la réponse de l'IA…` / `Ouvrir une recette (.szl)…` / `Enregistrer la recette…` |
+| Bouton des recettes en mode Rendu (livré) | `Recette ▾` : `Préparer pour mon IA…` / `Coller la réponse de l'IA…` / `Ouvrir une recette (.szl)…` / `Enregistrer la recette…` |
 | Barre d'état après import (livré) | `Recette « {nom} » appliquée en mode Rendu.` ; si l'analyse diffère : `Poids des zones de référence non repris : la recette a été écrite pour d'autres images.` |
 | Menu sans référence (livré) | `Charge d'abord une image de référence` |
 

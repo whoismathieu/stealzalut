@@ -62,6 +62,7 @@ from stealzalut.core.look import (
     look_diagnostics,
     zone_weights,
 )
+from stealzalut.core.look_pack import write_look_pack
 from stealzalut.core.lut_engine import VALID_LUT_SIZES
 from stealzalut.core.palette import (
     DEFAULT_ZONE_COUNT,
@@ -322,6 +323,8 @@ class MainWindow(QMainWindow):
             "les réglages actuels du mode Rendu"
         )
         self._look_recipe_menu = QMenu(self)
+        self._look_pack_action = self._look_recipe_menu.addAction("Préparer pour mon IA…")
+        self._look_recipe_menu.addSeparator()
         self._look_paste_action = self._look_recipe_menu.addAction("Coller la réponse de l'IA…")
         self._look_open_action = self._look_recipe_menu.addAction("Ouvrir une recette (.szl)…")
         self._look_save_action = self._look_recipe_menu.addAction("Enregistrer la recette…")
@@ -537,6 +540,7 @@ class MainWindow(QMainWindow):
         self._zone_count_spin.valueChanged.connect(self._on_zone_count_changed)
         self._tau_slider.valueChanged.connect(self._on_tau_changed)
         self._separation_slider.valueChanged.connect(self._on_separation_changed)
+        self._look_pack_action.triggered.connect(self._on_prepare_look_pack)
         self._look_paste_action.triggered.connect(self._on_paste_recipe)
         self._look_open_action.triggered.connect(self._on_open_recipe)
         self._look_save_action.triggered.connect(self._on_export_recipe)
@@ -698,6 +702,75 @@ class MainWindow(QMainWindow):
             "   tes photos telles quelles, pour que l'IA juge leur vraie ambiance.\n"
             "3. Colle le prompt : il est déjà dans ton presse-papiers (copie dans PROMPT.md).\n"
             "4. Copie toute sa réponse, puis ici : Importer › Coller la réponse de l'IA."
+        )
+        open_btn = box.addButton("Ouvrir le dossier", QMessageBox.ButtonRole.ActionRole)
+        box.addButton(QMessageBox.StandardButton.Ok)
+        box.exec()
+        if box.clickedButton() is open_btn:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+
+    def _on_prepare_look_pack(self) -> None:
+        """Write the look pack (with the current render) and copy its prompt."""
+        source, reference = self._source_zone.image_rgb, self._reference_zone.image_rgb
+        render = self._preview.image_rgb
+        cache = self._model_cache
+        model = None if cache is None else self._effective_model(cache[3])
+        palette = self._reference_zones()
+        pair_id = self._look_analysis_id()
+        if (
+            source is None
+            or reference is None
+            or render is None
+            or palette is None
+            or pair_id is None
+            or not isinstance(model, LookTransferModel)
+        ):
+            QMessageBox.information(
+                self,
+                "Rendu pas encore prêt",
+                "Charge une source et une référence et attends l'aperçu : le pack "
+                "montre à ton IA le rendu actuel.",
+            )
+            return
+        destination = QFileDialog.getExistingDirectory(
+            self, "Dossier où créer le pack pour ton IA", str(self._settings.lut_output_dir)
+        )
+        if not destination:
+            return
+        state = self._history.current
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            folder, prompt = write_look_pack(
+                Path(destination),
+                self._base_name(),
+                source,
+                reference,
+                render,
+                palette,
+                pair_id,
+                state.separation,
+                model.protect_vivid,
+                state.focus,
+            )
+        except OSError as exc:
+            QMessageBox.critical(self, "Pack non créé", f"Impossible d'écrire le pack :\n{exc}")
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        QGuiApplication.clipboard().setText(prompt)
+        self._status_bar.showMessage(f"Pack pour ton IA créé : {folder}")
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setWindowTitle("Pack prêt pour ton IA")
+        box.setText(f"Pack créé dans :\n{folder}\n(et une copie .zip à côté)")
+        box.setInformativeText(
+            "1. Ouvre ton IA (Claude, ChatGPT, Gemini…).\n"
+            "2. Joins les 5 images et analysis.json (ou le .zip) : la troisième image\n"
+            "   est le rendu actuel, celui que l'IA doit comparer à la référence.\n"
+            "3. Colle le prompt : il est déjà dans ton presse-papiers (copie dans PROMPT.md).\n"
+            "4. Copie toute sa réponse, puis ici : Recette › Coller la réponse de l'IA.\n"
+            "5. Pas encore ça ? Refais un pack : l'IA verra le nouveau rendu."
         )
         open_btn = box.addButton("Ouvrir le dossier", QMessageBox.ButtonRole.ActionRole)
         box.addButton(QMessageBox.StandardButton.Ok)

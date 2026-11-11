@@ -130,67 +130,55 @@ fenêtre sur le cas A : export, remise à zéro, réimport → même état, aper
 
 ---
 
-## T07 — Pack IA du mode `look` : l'IA voit le rendu
+## T07 — Pack IA du mode `look` : l'IA voit le rendu · **fait, prompt non validé**
+Nouveau module `src/stealzalut/core/look_pack.py` (le pack des zones, `core/ai_pack.py`,
+n'est pas modifié) :
 
-**But.** Boucle de correction : rendu → pack → réponse → rendu.
-
-**Fichiers.** `core/ai_pack.py`, `gui/main_window.py` (`_on_prepare_ai_pack` ≈ l. 568),
-`tests/test_ai_pack.py`.
-
-**Étapes.**
-1. `write_pack` gagne deux paramètres facultatifs en fin de signature :
-   `render_rgb: NDArray[np.uint8] | None = None`, `look: LookTransferModel | None = None`.
-   S'ils sont donnés : écrire `7_current_render.jpg`, la clé `"look"` de `analysis.json`
-   (`SPEC.md` §3.5) et le prompt ci-dessous à la place de `_PROMPT`.
-2. La fenêtre passe l'aperçu courant (`self._preview.image_rgb`).
-
-**Prompt (mot pour mot, les `{…}` sont remplis par le code).**
+```python
+LOOK_PACK_FILES = ("1_source.jpg", "2_reference.jpg", "3_current_render.jpg",
+                   "4_reference_zones.png", "5_reference_overview.png",
+                   "analysis.json", "PROMPT.md")
+def look_gaps(render_rgb, reference_rgb) -> dict[str, Any]
+def gaps_table(gaps: dict[str, Any]) -> str
+def look_analysis_dict(reference_rgb, reference: ZonePalette, analysis_id: str,
+                       separation: float, protect_vivid: float,
+                       focus: tuple[tuple[int, float], ...], gaps) -> dict[str, Any]
+def example_recipe(analysis_id: str, first_zone: int) -> dict[str, Any]
+def build_look_prompt(reference: ZonePalette, analysis_id: str, separation: float,
+                      protect_vivid: float, focus, gaps) -> str
+def write_look_pack(destination: Path, name: str, source_rgb, reference_rgb, render_rgb,
+                    reference: ZonePalette, analysis_id: str, separation: float,
+                    protect_vivid: float, focus=()) -> tuple[Path, str]
 ```
-# Corriger un rendu StealZaLut (mode « Rendu »)
 
-Tu es coloriste. Trois images comptent :
-- `1_source.jpg` : la photo d'origine ;
-- `2_reference.jpg` : l'ambiance à atteindre ;
-- `7_current_render.jpg` : ce que l'application produit **maintenant**.
+Le dossier s'appelle `<nom>_stealzalut_look_pack` (un `.zip` à côté). Le prompt est le
+texte de `_PROMPT` dans ce module : **c'est lui qui fait foi**, il remplace le brouillon
+qui figurait ici. Il contient un tableau d'écarts rendu / référence : luminosité
+moyenne, chroma moyenne, part de pixels colorés, et la couleur moyenne (en hexadécimal)
+des ombres (L < 0,35), des tons moyens et des hautes lumières (L ≥ 0,65), mesurés sur
+des vignettes de 640 px.
 
-L'application a déjà copié la courbe de tons, la dominante de chaque ton et la quantité
-de couleur de la référence. Ton rôle : comparer le rendu à la référence **à l'œil** et
-dire quoi corriger. Écarts mesurés (rendu → référence) :
+Interface : `MainWindow._on_prepare_look_pack`, première entrée du menu « Recette ▾ »
+(« Préparer pour mon IA… »). Le prompt est copié dans le presse-papiers. La protection
+des couleurs vives annoncée à l'IA est la valeur effective du modèle.
 
-{gaps_table}
+Écarts par rapport au plan d'origine : module séparé plutôt que des paramètres ajoutés à
+`write_pack` (le mode `look` n'a pas de `ZoneTransferModel`) ; le rendu est le fichier
+n° 3, pas n° 7 ; les planches de zones de la source ne sont pas dans le pack (le mode
+`look` ne s'en sert pas).
 
-## Ce que tu peux régler
-- `look.separation` (0 à 1.5, actuellement {separation}) : écarte les couleurs proches
-  du gris vers celles de la référence. Monte-le si le rendu paraît fade ou uniforme.
-- `look.protect_vivid` (0 à 1, actuellement {protect_vivid}) : garde la teinte des
-  néons et des couleurs vives de la photo. Monte-le si le rendu ressemble à un filtre.
-- `look.focus` : poids des zones de la référence ({reference_ids}, voir
-  `4_reference_zones.png`). 0 = ignorer (cadre, sujet hors propos), 2 = privilégier.
-- `global.luminance_strength`, `global.chroma_strength`, `global.mix` (0 à 1).
-- `finishing` : `saturation`, `vibrance` (−1 à 1), et les roues `shadows`, `midtones`,
-  `highlights` (`hue` en degrés, `amount` de 0 à 1, `lightness` de −1 à 1) pour teinter
-  une tranche de tons.
+Tests : `tests/test_look_pack.py` (8 tests, dont `test_look_prompt_example_parses` :
+l'exemple montré à l'IA est lui-même une recette valide) et `TestWindowLookPack`
+(2 tests) dans `tests/test_gui.py`. Vérifié dans la vraie fenêtre : packs écrits pour
+les cas A et B en moins d'une seconde.
 
-## Règles
-- Ne propose que ce que tu **vois** en comparant les images.
-- Un petit nombre de corrections franches vaut mieux que beaucoup de retouches timides.
-- Deux régions de même couleur ne peuvent pas être traitées différemment : dis-le dans
-  `description` si c'est ce qui manque.
-
-## Réponse
-Un seul bloc JSON :
-{example_json}
-```
-`{example_json}` : une recette valide avec `"format": "stealzalut.recipe"`, `"version":
-2`, `"analysis_id"`, `"mode": "look"`, `"name"`, `"description"`, `"look"`, `"global"`,
-`"finishing"`.
-
-**Tests.** `test_look_pack_contains_the_render`, `test_look_prompt_lists_reference_ids`,
-`test_look_prompt_example_parses` (l'exemple du prompt passe `parse_recipe`).
-
-**Validation obligatoire, hors tests.** Donner un vrai pack à une vraie IA (cas A et B),
-importer sa réponse, joindre la planche avant / après à `ACCEPTANCE.md`. **Ce prompt
-n'a jamais été soumis à une IA.**
+**Reste à faire, et ce n'est pas optionnel.** Ce prompt n'a été soumis à aucune IA.
+Donner un vrai pack (cas A et B) à l'IA de Mathieu, importer sa réponse, joindre la
+planche avant / après à `ACCEPTANCE.md`, et corriger le prompt selon ce que l'IA en
+fait réellement (voir le piège n° 8 du brief : un conseil de prompt peut faire plus de
+dégâts qu'un bug). Points à surveiller : l'IA recopie-t-elle les valeurs de l'exemple ?
+Utilise-t-elle les roues avec la bonne échelle de teintes ? Ignore-t-elle des zones à
+tort ?
 
 ---
 

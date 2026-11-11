@@ -80,4 +80,4 @@ Réponses attendues de Mathieu, qui débloquent le plan :
 | T04 | Paire n° 6 : bandeau « La photo a peu de couleurs… » ; cas A : pas de bandeau. |
 | T05 | Cas B, `prototypes/run_p4.py` : sans focus, 88,5 % de pixels colorés ; R1 ignorée ≥ 94 % ; R2 ignorée ≤ 78 % (± 2 points). Planche `prototypes/out/p4_focus.jpg` à juger par Mathieu. |
 | T06 | Une recette exportée en mode Rendu se réimporte à l'identique ; les recettes de `docs/audit/data/` s'importent comme avant. |
-| T07 | Une vraie réponse d'IA s'importe sans erreur sur A et B ; planche avant / après jointe. |
+| T07 | Code : fait et testé. **Validation restante** : une vraie réponse d'IA s'importe sans erreur sur A et B, et la planche avant / après montre un rendu au moins aussi proche de la référence. Tant que ce n'est pas fait, le prompt est un brouillon. |

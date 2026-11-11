@@ -7,14 +7,14 @@ Branche : `approach-v3` (partie de `main` au commit `fd49d2c`). Rien n'est pouss
 | A. Audit | `docs/audit/AUDIT.md` | **fait** |
 | B. Conception + prototypes | `DESIGN.md`, `prototypes/`, planches dans `prototypes/out/` | **fait** |
 | C. Spécification | `SPEC.md`, `IMPLEMENTATION_PLAN.md`, `ACCEPTANCE.md` | **fait** |
-| D. Implémentation | T01 moteur `core/look.py`, T02 enregistrement, T03 curseur « Séparation », T04 limites affichées, T05 zones de référence à ignorer ou privilégier, T06 recette `.szl` en mode Rendu, T08 « Rendu » par défaut | **fait** (433 tests, `ruff` et `mypy --strict` propres) |
-| D. Implémentation | T07 pack IA avec rendu | **à faire**, spécifié |
+| D. Implémentation | T01 moteur `core/look.py`, T02 enregistrement, T03 curseur « Séparation », T04 limites affichées, T05 zones de référence à ignorer ou privilégier, T06 recette `.szl` en mode Rendu, T07 pack IA avec le rendu actuel, T08 « Rendu » par défaut | **fait** (443 tests, `ruff` et `mypy --strict` propres) |
+| D. Validation | prompt du pack IA (T07) à essayer sur une vraie IA, cas A et B | **à faire par Mathieu** |
 | — | garder ou retirer « Ambiance », phase 2 (masques à la sortie) | **décision de Mathieu** |
 
 ## Pour reprendre
 
 1. Lire `DESIGN.md`, puis `SPEC.md` §0 (décidé / ouvert / interdit).
-2. Prendre la première tâche « à faire » de `IMPLEMENTATION_PLAN.md` (T07).
+2. Toutes les tâches T01 à T08 sont faites. Ce qui reste : la validation du prompt (T07) sur une vraie IA, puis les décisions de Mathieu.
 3. Les numéros de ligne cités dans le plan datent du commit `098396b` ; T03 a décalé
    `gui/main_window.py` d'une quarantaine de lignes : chercher les symboles par leur nom.
 

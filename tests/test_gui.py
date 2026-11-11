@@ -848,3 +848,61 @@ class TestWindowLookRecipe:
             assert window._history.current == saved
         finally:
             window.stop_workers()
+
+
+class TestWindowLookPack:
+    """« Préparer pour mon IA » in the look method: the pack shows the render."""
+
+    def test_prepare_look_pack(
+        self,
+        qapp: QApplication,
+        default_settings: Settings,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+        window = _look_window(
+            qapp,
+            default_settings,
+            TestLookBanner._coloured(tmp_path, "src.png", (60, 60, 160)),
+            TestLookBanner._coloured(tmp_path, "ref.png", (30, 120, 60)),
+        )
+        try:
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline and window._preview.image_rgb is None:
+                qapp.processEvents()
+                time.sleep(0.01)
+            out = tmp_path / "packs"
+            out.mkdir()
+            monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *a, **k: str(out))
+            monkeypatch.setattr(QMessageBox, "exec", lambda self: 0)
+            with patch.object(window, "_run_transfer_preview"):
+                window._separation_slider.setValue(120)
+            window._on_prepare_look_pack()
+
+            folder = out / "src_x_ref_stealzalut_look_pack"
+            assert (folder / "3_current_render.jpg").exists()
+            prompt = (folder / "PROMPT.md").read_text(encoding="utf-8")
+            assert QGuiApplication.clipboard().text() == prompt
+            assert "actuellement 1.2" in prompt
+            assert window._look_analysis_id() in prompt
+
+            # The model answer of the prompt imports as it is
+            with patch.object(window, "_run_transfer_preview"):
+                assert window.apply_recipe(parse_recipe(prompt))
+            assert window._history.current.protect_vivid == 0.5
+        finally:
+            window.stop_workers()
+
+    def test_look_pack_needs_a_render(
+        self, qapp: QApplication, default_settings: Settings
+    ) -> None:
+        window = MainWindow(settings=default_settings)
+        try:
+            window._algo_combo.setCurrentIndex(window._algo_combo.findData("look"))
+            with patch("stealzalut.gui.main_window.QMessageBox.information") as information:
+                window._on_prepare_look_pack()
+            assert information.call_args.args[1] == "Rendu pas encore prêt"
+        finally:
+            window.stop_workers()

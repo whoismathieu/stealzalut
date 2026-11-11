@@ -309,12 +309,14 @@ class LookTransferModel(TransferModel):
             shift *= (1.0 - self.protect_vivid * _smoothstep(chroma, *VIVID_CHROMA))[:, None]
         return shift
 
-    def apply(self, colors: F64) -> F64:
-        lab = srgb_to_oklab(colors)
+    def apply_lab(self, lab: F64) -> F64:
         out = np.empty_like(lab)
         out[:, 0] = self.tone(lab[:, 0])
         out[:, 1:] = lab[:, 1:] + self.chroma_shift(lab)
-        return oklab_to_srgb(gamut_compress(out))
+        return out
+
+    def apply(self, colors: F64) -> F64:
+        return oklab_to_srgb(gamut_compress(self.apply_lab(srgb_to_oklab(colors))))
 
 
 def fit_look(

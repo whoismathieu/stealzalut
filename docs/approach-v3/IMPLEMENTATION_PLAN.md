@@ -241,6 +241,57 @@ colorés 29,5 % ; cas B : inchangé à 0,001 près). Tout reste dans les toléra
 
 ---
 
+## T10 — Espace couleur du `.cube` · **fait, accord avec les hôtes non vérifié**
+
+**Principe.** Trois espaces distincts : celui de chaque image (lu dans son profil ICC,
+converti à l'entrée) ; celui du moteur (Oklab, non borné) ; celui du `.cube`, choisi à
+l'export, qui doit être celui où l'hôte l'applique (fenêtre de profil de Camera Raw,
+espace de la timeline dans Resolve). C'est l'architecture habituelle d'une chaîne
+gérée en couleur ; rien n'y est propre à StealZaLut.
+
+**Fait.**
+- `core/rgb_spaces.py` : `RGBSpace` (`to_oklab`, `from_oklab`, `oklab_to_linear`),
+  `SRGB`, `DISPLAY_P3`, `ADOBE_RGB`, `PROPHOTO_RGB`, `REC709`, `CUBE_SPACES`,
+  `space_by_key`. Les matrices sont **calculées** à partir des chromaticités publiées
+  (ProPhoto, de blanc D50, est adapté à D65 par Bradford), pas recopiées.
+- `colorspace.gamut_compress(lab, iters=12, to_linear=None)` : compression vers le
+  gamut de n'importe quel espace.
+- `TransferModel.apply_lab(lab) -> lab` : entrée Oklab, non bornée par sRGB. Par défaut,
+  une couleur hors sRGB prend le déplacement de la couleur sRGB la plus proche de même
+  teinte et luminosité ; `LookTransferModel` et `ZoneTransferModel` le font nativement.
+- `build_grid(model, size, params, finishing, space=SRGB)` : pour `SRGB`, le chemin
+  d'avant, **inchangé au bit près** (aperçu, oracles) ; sinon `_build_grid_in_space`.
+- `ExportWorker(space=…)` ; menu « Espace du .cube : » (`cubeSpaceCombo`) ; le nom de
+  fichier proposé porte l'espace (`…_display-p3.cube`) ; le message de fin d'export
+  dit quoi choisir dans l'hôte.
+- Tests : `tests/test_rgb_spaces.py` (44), `TestCubeSpace` (2) dans `tests/test_gui.py`.
+
+**Preuve de cohérence.** `test_other_space_is_the_same_grade` : une image encodée dans
+l'autre espace, passée par la grille de cet espace, puis ramenée en sRGB, donne le
+rendu de l'aperçu (méthodes `look`, `zones`, `oklab` × 4 espaces). Sur la paire réelle
+de Mathieu, à travers les fichiers `.cube` écrits par la vraie fenêtre : écart moyen
+(distance Oklab) 0,0016 en Display P3, 0,0022 en Adobe RGB, 0,0038 en ProPhoto, 0,0021
+en Rec.709 γ 2,4 ; 99ᵉ centile ≤ 0,012. L'essentiel vient de l'arrondi 8 bits.
+
+**Non vérifié — à lire avant de s'y fier.**
+- **Les courbes de transfert que chaque hôte associe à ces noms.** sRGB et Display P3
+  (courbe sRGB) sont sûrs. Pour Adobe RGB (γ 563/256), ProPhoto (γ 1,8 avec talon
+  linéaire) et Rec.709 (γ 2,4 pur), ce sont les définitions publiées ; je n'ai pas pu
+  vérifier que Camera Raw applique bien celles-là à la LUT d'un profil. Un essai dans
+  Lightroom avec une LUT neutre le dirait.
+- **Les couleurs hors sRGB ne sont jamais vues à l'ajustement** : les images sont
+  encore ramenées en sRGB 8 bits au chargement (aperçu, analyse). Dans un `.cube`
+  large, ce que reçoivent ces couleurs est une extrapolation. Elle est lisse et ne
+  replie pas, mais elle n'est validée par aucune image.
+- La mesure de repliement suppose qu'augmenter R, V ou B augmente la luminosité : faux
+  pour les primaires imaginaires de ProPhoto (sa grille neutre « replie » déjà de 0,6 %
+  selon cette mesure). Le rendu `look` n'en ajoute pas.
+
+**Reste possible.** Garder les images en espace large de bout en bout (lecture en
+flottant, aperçu géré en couleur) : c'est ce qui lèverait la deuxième réserve.
+
+---
+
 ## Phase 2 — non planifiée
 Sorties avec masques (une LUT par région + caches PNG, ou image gradée). Préalable :
 une segmentation fiable (pinceau, ou modèle ONNX optionnel avec licence vérifiée) et une

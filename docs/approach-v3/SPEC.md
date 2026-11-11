@@ -222,6 +222,8 @@ Une tranche de tons qui couvre moins de 1 % de l'image vaut `null`.
 
 | Bandeau, source RAW (livré) | `La source est un fichier RAW : l'aperçu est calculé sur l'image déjà développée par l'appareil. Lightroom et les autres logiciels développent le RAW à leur façon : le .cube n'y donnera pas ces couleurs. Pour retrouver l'aperçu, exporte d'abord la photo de ton logiciel en JPEG ou TIFF sRGB et prends cet export comme source, ou utilise « Exporter l'image… ».` |
 | Bouton d'export de l'image (livré) | `Exporter l'image…` |
+| Menu de l'espace (livré) | libellé `Espace du .cube :` ; entrées `sRGB`, `Display P3`, `Adobe RGB (1998)`, `ProPhoto RGB`, `Rec.709, gamma 2,4` |
+| Fin d'export (livré) | `Ce .cube attend une image en {espace} déjà développée, et rend du {espace}.` suivi de ce qu'il faut choisir dans l'hôte |
 
 ## 5. Glossaire
 

@@ -135,6 +135,9 @@ class ZoneTransferModel(TransferModel):
         out = lab + self.displacement(lab, colors)
         return oklab_to_srgb(gamut_compress(out))
 
+    def apply_lab(self, lab: F64) -> F64:
+        return lab + self.displacement(lab)
+
     # ── Internals ────────────────────────────────────────────────────────
 
     def displacement(self, lab: F64, srgb: F64 | None = None) -> F64:

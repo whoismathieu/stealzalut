@@ -92,6 +92,7 @@ from stealzalut.core.recipe import (
     parse_recipe,
     recipe_to_dict,
 )
+from stealzalut.core.rgb_spaces import CUBE_SPACES, SRGB, RGBSpace
 from stealzalut.core.zone_transfer import (
     Conflict,
     ZoneBakeParams,
@@ -171,6 +172,8 @@ class MainWindow(QMainWindow):
         self._mode_hint_dismissed = False
         # Known limits of the look method on the current pair
         self._look_diagnostics: LookDiagnostics | None = None
+        # Space of the .cube being exported (shown when the export ends)
+        self._exported_space: RGBSpace = SRGB
         # Zones of the reference, analysed when the focus menu first needs them
         self._reference_palette: ZonePalette | None = None
         # Message kept in the status bar when the next preview arrives
@@ -359,6 +362,25 @@ class MainWindow(QMainWindow):
         if default_idx >= 0:
             self._size_combo.setCurrentIndex(default_idx)
         controls_layout.addWidget(self._size_combo)
+
+        # Colour space the exported .cube is made for (the preview stays sRGB)
+        space_label = QLabel("Espace du .cube :")
+        space_label.setObjectName("controlLabel")
+        controls_layout.addWidget(space_label)
+        self._space_combo = QComboBox()
+        self._space_combo.setObjectName("cubeSpaceCombo")
+        for space in CUBE_SPACES:
+            self._space_combo.addItem(space.label, userData=space.key)
+        space_tooltip = (
+            "L'espace couleur dans lequel le .cube sera appliqué : le même que celui\n"
+            "choisi dans ton logiciel (fenêtre de profil de Camera Raw / Lightroom,\n"
+            "espace de la timeline dans Resolve).\n"
+            "L'aperçu reste en sRGB : un espace plus large garde des couleurs vives\n"
+            "que ton écran sRGB et cet aperçu ne montrent pas."
+        )
+        space_label.setToolTip(space_tooltip)
+        self._space_combo.setToolTip(space_tooltip)
+        controls_layout.addWidget(self._space_combo)
 
         controls_layout.addStretch()
 
@@ -656,7 +678,7 @@ class MainWindow(QMainWindow):
         if self._source_zone.image_path and self._reference_zone.image_path:
             src_stem = self._source_zone.image_path.stem
             ref_stem = self._reference_zone.image_path.stem
-            default_name = f"{src_stem}_x_{ref_stem}.cube"
+            default_name = f"{src_stem}_x_{ref_stem}{self._cube_suffix()}.cube"
 
         default_dir = str(self._settings.lut_output_dir)
         default_path = str(Path(default_dir) / default_name)
@@ -1531,6 +1553,16 @@ class MainWindow(QMainWindow):
         self._refresh_focus_button()
         self._update_undo_buttons()
 
+    def _cube_space(self) -> RGBSpace:
+        """Colour space chosen for the exported .cube."""
+        key = self._space_combo.currentData()
+        return next((space for space in CUBE_SPACES if space.key == key), SRGB)
+
+    def _cube_suffix(self) -> str:
+        """File name suffix naming the space, so cubes of two spaces don't get mixed up."""
+        space = self._cube_space()
+        return "" if space is SRGB else f"_{space.key}"
+
     def _separation(self) -> float:
         return self._separation_slider.value() / _SEPARATION_STEPS
 
@@ -1710,6 +1742,7 @@ class MainWindow(QMainWindow):
         self._progress_bar.setValue(0)
 
         title = output_path.stem
+        self._exported_space = self._cube_space()
         self._export_worker = ExportWorker(
             source_rgb=source,
             reference_rgb=reference,
@@ -1720,6 +1753,7 @@ class MainWindow(QMainWindow):
             params=self._adjustments.params(),
             finishing=self._history.current.finishing,
             model=None if raw_model is None else self._effective_model(raw_model),
+            space=self._cube_space(),
         )
         self._export_worker.progress.connect(self._on_export_progress)
         self._export_worker.result_ready.connect(self._on_export_result)
@@ -1733,18 +1767,25 @@ class MainWindow(QMainWindow):
     def _on_export_result(self, path_str: str) -> None:
         self._progress_bar.setValue(100)
         path = Path(path_str)
-        self._status_bar.showMessage(f"Exported: {path.name}")
+        space = self._exported_space
+        self._status_bar.showMessage(f"Exporté ({space.label}) : {path.name}")
         logger.info("Exported to %s", path)
 
         msg = (
             f"LUT 3D enregistrée :\n{path}\n\n"
-            "Ce .cube attend une image sRGB déjà développée, et rend du sRGB.\n\n"
+            f"Ce .cube attend une image en {space.label} déjà développée, et rend "
+            f"du {space.label}.\n\n"
             "• Lightroom / Camera Raw : à la création du profil, choisis l'espace "
-            "« sRGB » pour la table de couleurs.\n"
-            "• DaVinci Resolve, Premiere : applique-le sur une image en Rec.709 / sRGB "
+            f"« {space.host_name} » pour la table de couleurs.\n"
+            f"• DaVinci Resolve, Premiere : applique-le sur une image en {space.host_name} "
             "(après la conversion d'espace, pas sur du log ou du brut).\n\n"
             "Dans un autre espace, les couleurs ne seront pas celles de l'aperçu."
         )
+        if space.wide:
+            msg += (
+                "\n\nCet espace est plus large que sRGB : le .cube garde des couleurs "
+                "vives que l'aperçu, en sRGB, ne montre pas."
+            )
 
         QMessageBox.information(
             self,

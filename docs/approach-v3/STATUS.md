@@ -10,6 +10,7 @@ Branche : `approach-v3` (partie de `main` au commit `fd49d2c`). Rien n'est pouss
 | D. Implémentation | T01 moteur `core/look.py`, T02 enregistrement, T03 curseur « Séparation », T04 limites affichées, T05 zones de référence à ignorer ou privilégier, T06 recette `.szl` en mode Rendu, T07 pack IA avec le rendu actuel, T08 « Rendu » par défaut | **fait** (443 tests, `ruff` et `mypy --strict` propres) |
 | D. Validation | prompt du pack IA (T07) à essayer sur une vraie IA, cas A et B | **à faire par Mathieu** |
 | D. Fidélité de l'entrée | T09 : profils couleur convertis en sRGB, bandeau pour les sources RAW, export de l'image gradée | **fait** (456 tests) ; l'accord avec Lightroom reste **à vérifier par Mathieu** |
+| D. Espace du `.cube` | T10 : sRGB, Display P3, Adobe RGB, ProPhoto, Rec.709 γ 2,4 | **fait** (502 tests) ; accord avec Lightroom et Resolve **à vérifier par Mathieu** |
 | — | garder ou retirer « Ambiance », phase 2 (masques à la sortie) | **décision de Mathieu** |
 
 ## Pour reprendre

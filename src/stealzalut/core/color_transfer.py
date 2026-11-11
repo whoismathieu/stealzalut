@@ -365,6 +365,18 @@ class TransferModel(ABC):
     def apply(self, colors: NDArray[np.float64]) -> NDArray[np.float64]:
         """Map colours ``(N, 3)`` in [0, 1] to transferred colours, clamped."""
 
+    def apply_lab(self, lab: NDArray[np.float64]) -> NDArray[np.float64]:
+        """Map Oklab colours ``(N, 3)`` to Oklab, also outside the sRGB gamut.
+
+        :meth:`apply` only knows sRGB.  A grid made for a wider space (Display
+        P3, ProPhoto…) holds colours sRGB cannot encode; by default such a
+        colour takes the displacement of the nearest sRGB colour of the same
+        hue and lightness.  Models that work natively in Oklab override this.
+        """
+        inside = gamut_compress(lab)
+        moved = srgb_to_oklab(self.apply(oklab_to_srgb(inside)))
+        return lab + (moved - inside)
+
     def fold_reference(self) -> TransferModel:
         """Model whose own folds are accepted as-is when regularising a grid.
 

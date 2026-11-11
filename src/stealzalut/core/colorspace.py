@@ -16,6 +16,7 @@ sRGB values are expected in ``[0, 1]``.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import cast
 
 import numpy as np
@@ -129,7 +130,11 @@ def _in_gamut(rgb_linear: F64) -> NDArray[np.bool_]:
     )
 
 
-def gamut_compress(lab: F64, iters: int = 12) -> F64:
+def gamut_compress(
+    lab: F64,
+    iters: int = 12,
+    to_linear: Callable[[F64], F64] | None = None,
+) -> F64:
     """Pull out-of-gamut Oklab colours back into sRGB by reducing chroma.
 
     Lightness is clamped to ``[0, 1]`` and hue is preserved; only the
@@ -139,13 +144,16 @@ def gamut_compress(lab: F64, iters: int = 12) -> F64:
     Args:
         lab: Oklab colours ``(N, 3)``.
         iters: Binary-search iterations (12 → precision ≈ 2.4e-4).
+        to_linear: Oklab → linear RGB of the target space (default: sRGB).
+            The gamut is the unit cube of those linear values.
 
     Returns:
         A new ``(N, 3)`` array whose colours map inside the sRGB gamut.
     """
     result = lab.copy()
     result[:, 0] = np.clip(result[:, 0], 0.0, 1.0)
-    out = ~_in_gamut(oklab_to_linear(result))
+    convert = oklab_to_linear if to_linear is None else to_linear
+    out = ~_in_gamut(convert(result))
     if not out.any():
         return result
 
@@ -156,7 +164,7 @@ def gamut_compress(lab: F64, iters: int = 12) -> F64:
     for _ in range(iters):
         mid = 0.5 * (lo + hi)
         candidate = np.concatenate([lightness, ab * mid[:, None]], axis=1)
-        ok = _in_gamut(oklab_to_linear(candidate))
+        ok = _in_gamut(convert(candidate))
         lo = np.where(ok, mid, lo)
         hi = np.where(ok, hi, mid)
     result[out, 1:] = ab * lo[:, None]

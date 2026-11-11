@@ -36,6 +36,7 @@ from stealzalut.core.colorspace import gamut_compress, oklab_to_oklch, oklab_to_
 from stealzalut.core.finishing import Finishing, apply_finishing
 from stealzalut.core.lut_engine import generate_neutral_grid
 from stealzalut.core.regularize import fold_fraction, smooth_field
+from stealzalut.core.rgb_spaces import SRGB, RGBSpace
 
 F64 = NDArray[np.float64]
 
@@ -156,6 +157,7 @@ def build_grid(
     size: int,
     params: GradingParams | None = None,
     finishing: Finishing | None = None,
+    space: RGBSpace = SRGB,
 ) -> GridResult:
     """Bake *model* onto a *size*³ grid with the user's adjustments.
 
@@ -169,12 +171,17 @@ def build_grid(
         params: Adjustments (defaults: none).
         finishing: Finishing tools, applied last, after the fold control
             (wheels, tone curve, colour bands, saturation).
+        space: RGB space the grid is made for: its nodes are read as
+            colours of that space and written back in it.  The preview
+            uses sRGB; a wider space keeps colours sRGB cannot hold.
 
     Returns:
         The grid and its diagnostics.
     """
     params = params or GradingParams()
     base = generate_neutral_grid(size)
+    if space is not SRGB:
+        return _build_grid_in_space(model, size, params, finishing, space, base)
     raw = model.apply(base)
     lab_raw = srgb_to_oklab(raw)
 
@@ -204,4 +211,38 @@ def build_grid(
         folds = fold_fraction(lab_out[:, 0], size)
 
     grid = oklab_to_srgb(gamut_compress(lab_out))
+    return GridResult(grid, folds, smoothing, auto_smoothed=auto)
+
+
+def _build_grid_in_space(
+    model: TransferModel,
+    size: int,
+    params: GradingParams,
+    finishing: Finishing | None,
+    space: RGBSpace,
+    base: F64,
+) -> GridResult:
+    """:func:`build_grid` for a space other than sRGB (same steps, in Oklab)."""
+    lab_in = space.to_oklab(base)
+    lab_raw = model.apply_lab(lab_in)
+    baseline = model.fold_reference()
+    reference_l = lab_raw[:, 0] if baseline is model else baseline.apply_lab(lab_in)[:, 0]
+    raw_folds = fold_fraction(reference_l, size)
+
+    delta = adjust_displacement(lab_in, lab_raw, params)
+    smoothing = params.smoothing
+    auto = False
+    for attempt in range(AUTO_SMOOTHING_STEPS + 1):
+        lab_out = lab_in + smooth_field(delta, size, _sigma_cells(smoothing, size))
+        folds = fold_fraction(lab_out[:, 0], size)
+        if folds <= raw_folds + MAX_EXTRA_FOLDS or attempt == AUTO_SMOOTHING_STEPS:
+            break
+        smoothing = max(smoothing * 2.0, AUTO_SMOOTHING_START)
+        auto = True
+
+    if finishing is not None and not finishing.is_identity:
+        lab_out = apply_finishing(lab_out, finishing)
+        folds = fold_fraction(lab_out[:, 0], size)
+
+    grid = space.from_oklab(gamut_compress(lab_out, to_linear=space.oklab_to_linear))
     return GridResult(grid, folds, smoothing, auto_smoothed=auto)

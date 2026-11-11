@@ -1009,3 +1009,71 @@ class TestSourceFidelity:
             assert information.call_args.args[1] == "Rendu pas encore prêt"
         finally:
             window.stop_workers()
+
+
+class TestCubeSpace:
+    """The colour space the exported .cube is made for."""
+
+    def test_space_menu_defaults_to_srgb(
+        self, qapp: QApplication, default_settings: Settings
+    ) -> None:
+        from stealzalut.core.rgb_spaces import CUBE_SPACES, SRGB
+
+        window = MainWindow(settings=default_settings)
+        try:
+            combo = window._space_combo
+            assert [combo.itemData(i) for i in range(combo.count())] == [
+                space.key for space in CUBE_SPACES
+            ]
+            assert window._cube_space() is SRGB
+            assert window._cube_suffix() == ""
+            combo.setCurrentIndex(combo.findData("display-p3"))
+            assert window._cube_space().label == "Display P3"
+            assert window._cube_suffix() == "_display-p3"
+        finally:
+            window.stop_workers()
+
+    def test_export_uses_the_chosen_space(
+        self,
+        qapp: QApplication,
+        default_settings: Settings,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from PySide6.QtWidgets import QMessageBox
+
+        from stealzalut.core.grading import build_grid
+        from stealzalut.core.rgb_spaces import DISPLAY_P3
+
+        window = _look_window(
+            qapp,
+            default_settings,
+            TestLookBanner._coloured(tmp_path, "s.png", (60, 60, 160)),
+            TestLookBanner._coloured(tmp_path, "r.png", (30, 120, 60)),
+        )
+        try:
+            shown: list[str] = []
+            monkeypatch.setattr(
+                QMessageBox, "information", lambda parent, title, text: shown.append(text)
+            )
+            window._space_combo.setCurrentIndex(window._space_combo.findData("display-p3"))
+            target = tmp_path / "p3.cube"
+            window._run_export(target)
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline and not shown:
+                qapp.processEvents()
+                time.sleep(0.01)
+
+            assert "Display P3" in shown[0] and "plus large que sRGB" in shown[0]
+            rows = [
+                [float(v) for v in line.split()]
+                for line in target.read_text().splitlines()
+                if line and (line[0].isdigit() or line[0] == "-")
+            ]
+            model = window._effective_model(window._model_cache[3])
+            expected = build_grid(model, 33, window._adjustments.params(), None, DISPLAY_P3).grid
+            assert np.allclose(np.array(rows), expected, atol=1e-6)
+            srgb_grid = build_grid(model, 33, window._adjustments.params()).grid
+            assert not np.allclose(np.array(rows), srgb_grid, atol=1e-3)  # really another grid
+        finally:
+            window.stop_workers()

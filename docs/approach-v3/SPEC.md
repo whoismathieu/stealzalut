@@ -174,7 +174,7 @@ un test que `labels.size == create_thumbnail(reference, 256).shape[0] * shape[1]
 focus: tuple[tuple[int, float], ...] = ()   # (zone de référence, poids), T05
 ```
 
-### 3.4. `core/recipe.py` — mode `look` (T06)
+### 3.4. `core/recipe.py` — mode `look` (T06, livré)
 - `RECIPE_MODES = ("zones", "ambiance", "look")`.
 - `Recipe` gagne `separation: float | None = None`, `protect_vivid: float | None = None`,
   `focus: dict[int, float] = field(default_factory=dict)`.
@@ -216,6 +216,8 @@ focus: tuple[tuple[int, float], ...] = ()   # (zone de référence, poids), T05
 | Bouton des zones de référence (livré) | `Référence ▾`, ou `Référence (2) ▾` quand deux zones ont un poids modifié |
 | Sous-menu d'une zone (livré) | titre `R3 — 18 % de l'image`, suivi de ` · ignorée` ou ` · privilégiée` ; choix `Poids normal` / `Ignorer cette zone pour le rendu` / `Privilégier cette zone pour le rendu` |
 | Bas du menu (livré) | `Tout remettre au poids normal` |
+| Bouton des recettes en mode Rendu (livré) | `Recette ▾` : `Coller la réponse de l'IA…` / `Ouvrir une recette (.szl)…` / `Enregistrer la recette…` |
+| Barre d'état après import (livré) | `Recette « {nom} » appliquée en mode Rendu.` ; si l'analyse diffère : `Poids des zones de référence non repris : la recette a été écrite pour d'autres images.` |
 | Menu sans référence (livré) | `Charge d'abord une image de référence` |
 
 ## 5. Glossaire

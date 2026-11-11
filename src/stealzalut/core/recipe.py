@@ -29,12 +29,14 @@ from stealzalut.core.finishing import (
     with_band,
 )
 from stealzalut.core.grading import GradingParams
+from stealzalut.core.look import FOCUS_RANGE
+from stealzalut.core.look import SEPARATION_RANGE as LOOK_SEPARATION_RANGE
 
 RECIPE_FORMAT = "stealzalut.recipe"
 RECIPE_VERSION = 2
 RECIPE_SUFFIX = ".szl"
 #: Transfer modes a recipe can ask for.
-RECIPE_MODES = ("zones", "ambiance")
+RECIPE_MODES = ("zones", "ambiance", "look")
 
 STRENGTH_WORDS: dict[str, float] = {
     "off": 0.0,
@@ -98,8 +100,14 @@ class Recipe:
     #: Finishing settings the recipe actually gives (an AI only gives
     #: saturation / vibrance; the user's wheels and curve must survive).
     finishing_keys: frozenset[str] = frozenset()
-    #: "zones" or "ambiance" (``None``: not given, stay in the current mode).
+    #: "zones", "ambiance" or "look" (``None``: not given, stay in the current mode).
     mode: str | None = None
+    #: Look method: separation, if given.
+    separation: float | None = None
+    #: Look method: protection of vivid source colours, if given.
+    protect_vivid: float | None = None
+    #: Look method: weight per reference zone id (zones left out weigh 1).
+    focus: dict[int, float] = field(default_factory=dict)
 
 
 # ── Reading ──────────────────────────────────────────────────────────────────
@@ -160,14 +168,18 @@ def parse_recipe(source: str | dict[str, Any]) -> Recipe:
     analysis = data.get("analysis_id")
     mode = data.get("mode")
     if mode is not None and mode not in RECIPE_MODES:
-        raise RecipeError(f"« mode » : « {mode} » inconnu (valeurs possibles : zones | ambiance).")
+        allowed = " | ".join(RECIPE_MODES)
+        raise RecipeError(f"« mode » : « {mode} » inconnu (valeurs possibles : {allowed}).")
     zone_count = data.get("zone_count")
     if zone_count is not None and (not _is_number(zone_count) or int(zone_count) != zone_count):
         raise RecipeError(f"zone_count : {zone_count!r} doit être un nombre entier.")
 
     grading, tau = _parse_global(data.get("global"))
 
-    raw_links = data.get("links", [])
+    separation, protect_vivid, focus = _parse_look(data.get("look"))
+
+    # The look method has no links: whatever an AI adds there is ignored
+    raw_links = [] if mode == "look" else data.get("links", [])
     if not isinstance(raw_links, list):
         raise RecipeError("« links » doit être une liste.")
     links = tuple(_parse_link(item, i) for i, item in enumerate(raw_links, start=1))
@@ -188,6 +200,9 @@ def parse_recipe(source: str | dict[str, Any]) -> Recipe:
         finishing=_parse_finishing(data.get("finishing")),
         finishing_keys=_finishing_keys(data.get("finishing")),
         mode=mode,
+        separation=separation,
+        protect_vivid=protect_vivid,
+        focus=focus,
     )
 
 
@@ -262,6 +277,47 @@ def _parse_global(raw: Any) -> tuple[dict[str, float], float | None]:
     }
     separation = raw.get("zone_separation")
     return grading, None if separation is None else _separation(separation)
+
+
+def _parse_look(raw: Any) -> tuple[float | None, float | None, dict[int, float]]:
+    """Settings of the look method: separation, vivid protection, zone weights."""
+    if raw is None:
+        return None, None, {}
+    if not isinstance(raw, dict):
+        raise RecipeError("« look » doit être un objet { … }.")
+
+    def ranged(key: str, bounds: tuple[float, float], message: str) -> float | None:
+        value = raw.get(key)
+        if value is None:
+            return None
+        if not _is_number(value) or not bounds[0] <= value <= bounds[1]:
+            raise RecipeError(message)
+        return float(value)
+
+    separation = ranged(
+        "separation",
+        LOOK_SEPARATION_RANGE,
+        f"« look.separation » doit être un nombre entre 0 et {LOOK_SEPARATION_RANGE[1]:g}.",
+    )
+    protect_vivid = ranged(
+        "protect_vivid", (0.0, 1.0), "« look.protect_vivid » doit être un nombre entre 0 et 1."
+    )
+
+    raw_focus = raw.get("focus")
+    if raw_focus is None:
+        return separation, protect_vivid, {}
+    if not isinstance(raw_focus, dict):
+        raise RecipeError('« look.focus » doit être un objet { "R1": 0, … }.')
+    lo, hi = FOCUS_RANGE
+    focus: dict[int, float] = {}
+    for key, weight in raw_focus.items():
+        zone = _zone_id(key, "look.focus", "R")
+        if not _is_number(weight) or not lo <= weight <= hi:
+            raise RecipeError(
+                f"« look.focus » : le poids de {key} doit être un nombre entre 0 et {hi:g}."
+            )
+        focus[zone] = float(weight)
+    return separation, protect_vivid, focus
 
 
 def _parse_link(raw: Any, index: int) -> RecipeLink:
@@ -563,6 +619,59 @@ def recipe_to_dict(
             None if finishing is None or finishing.is_identity else finishing_to_dict(finishing)
         ),
     }
+
+
+def look_focus(recipe: Recipe, reference_ids: tuple[int, ...]) -> tuple[tuple[int, float], ...]:
+    """The recipe's zone weights as sorted ``(zone id, weight)`` pairs.
+
+    Zones weighing 1 are left out (it is the default).
+
+    Raises:
+        RecipeError: If the recipe names a zone the reference does not have.
+    """
+    for zone in recipe.focus:
+        if zone not in reference_ids:
+            raise RecipeError(
+                f"« look.focus » : « R{zone} » n'est pas une zone de la référence "
+                f"(R1 à R{max(reference_ids)})."
+            )
+    return tuple(sorted((zone, w) for zone, w in recipe.focus.items() if w != 1.0))
+
+
+def look_recipe_to_dict(
+    params: GradingParams,
+    separation: float,
+    protect_vivid: float | None,
+    focus: tuple[tuple[int, float], ...],
+    analysis_id: str | None,
+    name: str = "",
+    description: str = "",
+    finishing: Finishing | None = None,
+) -> dict[str, Any]:
+    """Serialise the settings of the look method; :func:`parse_recipe` reads them back."""
+    look: dict[str, Any] = {"separation": separation}
+    if protect_vivid is not None:
+        look["protect_vivid"] = protect_vivid
+    if focus:
+        look["focus"] = {f"R{zone}": weight for zone, weight in focus}
+    data: dict[str, Any] = {"format": RECIPE_FORMAT, "version": RECIPE_VERSION}
+    if analysis_id:
+        data["analysis_id"] = analysis_id
+    data.update(
+        {
+            "mode": "look",
+            "name": name,
+            "description": description,
+            "look": look,
+            "global": {field_name: getattr(params, field_name) for field_name in _GRADING_FIELDS},
+            "finishing": (
+                None
+                if finishing is None or finishing.is_identity
+                else finishing_to_dict(finishing)
+            ),
+        }
+    )
+    return data
 
 
 def dump_recipe(data: dict[str, Any]) -> str:

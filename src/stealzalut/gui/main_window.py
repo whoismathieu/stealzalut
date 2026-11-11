@@ -69,6 +69,7 @@ from stealzalut.core.palette import (
     MIN_ZONE_COUNT,
     ColourStats,
     ZonePalette,
+    analysis_id,
     analyze_zones,
     colour_stats,
 )
@@ -82,6 +83,8 @@ from stealzalut.core.recipe import (
     colour_dose,
     dump_recipe,
     full_dose,
+    look_focus,
+    look_recipe_to_dict,
     merge_finishing,
     parse_recipe,
     recipe_to_dict,
@@ -311,6 +314,24 @@ class MainWindow(QMainWindow):
         self._focus_btn.clicked.connect(self._open_focus_menu)
         controls_layout.addWidget(self._focus_btn)
 
+        # Recipes of the look method (the zones method has its own toolbar)
+        self._look_recipe_btn = QPushButton("Recette ▾")
+        self._look_recipe_btn.setObjectName("lookRecipeButton")
+        self._look_recipe_btn.setToolTip(
+            "Appliquer la réponse de ton IA ou une recette enregistrée, ou enregistrer "
+            "les réglages actuels du mode Rendu"
+        )
+        self._look_recipe_menu = QMenu(self)
+        self._look_paste_action = self._look_recipe_menu.addAction("Coller la réponse de l'IA…")
+        self._look_open_action = self._look_recipe_menu.addAction("Ouvrir une recette (.szl)…")
+        self._look_save_action = self._look_recipe_menu.addAction("Enregistrer la recette…")
+        self._look_recipe_btn.clicked.connect(
+            lambda: self._look_recipe_menu.popup(
+                self._look_recipe_btn.mapToGlobal(self._look_recipe_btn.rect().topLeft())
+            )
+        )
+        controls_layout.addWidget(self._look_recipe_btn)
+
         # LUT size selector
         size_label = QLabel("LUT Size:")
         size_label.setObjectName("controlLabel")
@@ -516,6 +537,9 @@ class MainWindow(QMainWindow):
         self._zone_count_spin.valueChanged.connect(self._on_zone_count_changed)
         self._tau_slider.valueChanged.connect(self._on_tau_changed)
         self._separation_slider.valueChanged.connect(self._on_separation_changed)
+        self._look_paste_action.triggered.connect(self._on_paste_recipe)
+        self._look_open_action.triggered.connect(self._on_open_recipe)
+        self._look_save_action.triggered.connect(self._on_export_recipe)
         self._all_auto_btn.clicked.connect(self._on_all_auto)
         self._ai_pack_btn.clicked.connect(self._on_prepare_ai_pack)
         self._paste_action.triggered.connect(self._on_paste_recipe)
@@ -707,6 +731,9 @@ class MainWindow(QMainWindow):
         self.apply_recipe(recipe)
 
     def _on_export_recipe(self) -> None:
+        if self._current_method == "look":
+            self._export_look_recipe()
+            return
         model, table = self._zone_model, self._history.current.table
         if model is None or table is None:
             return
@@ -741,8 +768,18 @@ class MainWindow(QMainWindow):
         """
         if recipe.mode == "ambiance":
             return self._apply_ambiance_recipe(recipe)
+        # In the look method a recipe without a mode sets what it can there
+        if recipe.mode == "look" or (recipe.mode is None and self._current_method == "look"):
+            return self._apply_look_recipe(recipe)
         model = self._zone_model
         if model is None:
+            if self._current_method == "look":
+                QMessageBox.information(
+                    self,
+                    "Recette pour la méthode Zones",
+                    "Cette recette règle des correspondances entre zones : choisis la "
+                    "méthode « Zones » pour l'appliquer.",
+                )
             return False
         if check_analysis and recipe.analysis_id and recipe.analysis_id != model.analysis_id:
             choice = self._ask_other_analysis(recipe)
@@ -812,6 +849,86 @@ class MainWindow(QMainWindow):
         self._status_note = f"{note} {recipe.description}".strip()
         self._status_bar.showMessage(self._status_note)
         return True
+
+    def _look_analysis_id(self) -> str | None:
+        """Fingerprint of the pair, which the reference's zone ids depend on."""
+        source, reference = self._source_zone.image_rgb, self._reference_zone.image_rgb
+        if source is None or reference is None:
+            return None
+        return analysis_id(source, reference, DEFAULT_ZONE_COUNT)
+
+    def _apply_look_recipe(self, recipe: Recipe) -> bool:
+        """A recipe for the look method: switch to it, then apply its settings."""
+        self._algo_combo.setCurrentIndex(self._algo_combo.findData("look"))
+        if self._current_method != "look":  # switch refused (hand-edited links)
+            return False
+        current = self._history.current
+        focus = current.focus
+        notes: list[str] = []
+        if recipe.focus:
+            palette = self._reference_zones()
+            if palette is None:
+                QMessageBox.information(
+                    self,
+                    "Référence manquante",
+                    "Charge d'abord une image de référence : la recette règle ses zones.",
+                )
+                return False
+            if recipe.analysis_id and recipe.analysis_id != self._look_analysis_id():
+                notes.append(
+                    "Poids des zones de référence non repris : la recette a été écrite "
+                    "pour d'autres images."
+                )
+            else:
+                try:
+                    focus = look_focus(recipe, palette.ids)
+                except RecipeError as exc:
+                    QMessageBox.critical(self, "Recette non applicable", str(exc))
+                    return False
+        params, tau = apply_global(recipe, current.params, current.tau)
+        state = replace(
+            current,
+            table=None,
+            params=params,
+            tau=tau,
+            finishing=merge_finishing(recipe, current.finishing),
+            separation=current.separation if recipe.separation is None else recipe.separation,
+            protect_vivid=(
+                current.protect_vivid if recipe.protect_vivid is None else recipe.protect_vivid
+            ),
+            focus=focus,
+        )
+        if self._history.push(state):
+            self._restore(state)
+        title = f"« {recipe.name} »" if recipe.name else "importée"
+        note = " ".join([f"Recette {title} appliquée en mode Rendu.", *notes])
+        self._status_note = f"{note} {recipe.description}".strip()
+        self._status_bar.showMessage(self._status_note)
+        return True
+
+    def _export_look_recipe(self) -> None:
+        default = Path(self._settings.lut_output_dir) / f"{self._base_name()}{RECIPE_SUFFIX}"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Exporter la recette", str(default), f"Recette StealZaLut (*{RECIPE_SUFFIX})"
+        )
+        if not path:
+            return
+        state = self._history.current
+        data = look_recipe_to_dict(
+            state.params,
+            state.separation,
+            state.protect_vivid,
+            state.focus,
+            self._look_analysis_id(),
+            name=Path(path).stem,
+            finishing=state.finishing,
+        )
+        try:
+            Path(path).write_text(dump_recipe(data), encoding="utf-8")
+        except OSError as exc:
+            QMessageBox.critical(self, "Recette non enregistrée", str(exc))
+            return
+        self._status_bar.showMessage(f"Recette enregistrée : {path}")
 
     # ── Monochrome reference hint ────────────────────────────────────────
 
@@ -953,7 +1070,7 @@ class MainWindow(QMainWindow):
         return "cancel"
 
     def _require_zones(self) -> bool:
-        if self._zone_model is not None:
+        if self._current_method == "look" or self._zone_model is not None:
             return True
         QMessageBox.information(
             self,
@@ -1145,7 +1262,7 @@ class MainWindow(QMainWindow):
         """*model* with the user's correspondences and separation settings."""
         state = self._history.current
         if isinstance(model, LookTransferModel):
-            return model.with_separation(state.separation)
+            return _prepare_model(state.tau, state.separation, state.protect_vivid, model)
         if not isinstance(model, ZoneTransferModel):
             return model
         table = state.table
@@ -1248,6 +1365,7 @@ class MainWindow(QMainWindow):
             self._separation_slider,
             self._separation_value,
             self._focus_btn,
+            self._look_recipe_btn,
         ):
             widget.setVisible(is_look)
 
@@ -1304,7 +1422,10 @@ class MainWindow(QMainWindow):
             model=model,
             zone_count=self._zone_count,
             prepare=partial(
-                _prepare_model, self._history.current.tau, self._history.current.separation
+                _prepare_model,
+                self._history.current.tau,
+                self._history.current.separation,
+                self._history.current.protect_vivid,
             ),
             reference_weights=self._reference_weights(),
         )
@@ -1486,10 +1607,13 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
 
-def _prepare_model(tau: float, separation: float, model: TransferModel) -> TransferModel:
+def _prepare_model(
+    tau: float, separation: float, protect_vivid: float | None, model: TransferModel
+) -> TransferModel:
     """Apply the user's separation settings to a freshly fitted model."""
     if isinstance(model, ZoneTransferModel):
         return model.with_params(ZoneBakeParams(tau=tau))
     if isinstance(model, LookTransferModel):
-        return model.with_separation(separation)
+        model = model.with_separation(separation)
+        return model if protect_vivid is None else model.with_protect_vivid(protect_vivid)
     return model

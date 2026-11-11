@@ -95,22 +95,38 @@ sans les poids (`ExportWorker` n'a ni `prepare` ni `reference_weights`).
 
 ---
 
-## T06 — Recette `.szl` : mode `look`
+## T06 — Recette `.szl` : mode `look` · **fait**
+`core/recipe.py` : `RECIPE_MODES` contient `"look"` ; `Recipe.separation`,
+`Recipe.protect_vivid`, `Recipe.focus` ; `_parse_look` ; `look_focus(recipe,
+reference_ids)` ; `look_recipe_to_dict(params, separation, protect_vivid, focus,
+analysis_id, name, description, finishing)`. La version reste 2.
 
-**But.** Sauvegarder / recharger / recevoir d'une IA les réglages du mode `look`.
+`gui/` : `EditState.protect_vivid: float | None = None` (`None` = la valeur choisie par
+le modèle) ; `MainWindow.apply_recipe` aiguille vers `_apply_look_recipe` ;
+`_export_look_recipe` ; `_look_analysis_id` ; `_prepare_model(tau, separation,
+protect_vivid, model)`. Bouton « Recette ▾ » (`lookRecipeButton`), visible en méthode
+`look`, avec « Coller la réponse de l'IA… », « Ouvrir une recette (.szl)… »,
+« Enregistrer la recette… » (la barre des recettes existante est dans le panneau des
+zones, masqué hors de la méthode `zones`).
 
-**Fichiers.** `core/recipe.py`, `gui/main_window.py` (`_apply_recipe` ≈ l. 660–730,
-calquer `_apply_ambiance_recipe`), `tests/test_recipe.py`.
+Règles appliquées à l'import :
+- `mode: "look"` → bascule sur la méthode `look` (comme `ambiance`) ;
+- recette sans `mode`, importée en méthode `look` → ses réglages globaux et sa finition
+  s'appliquent en `look` ;
+- `mode: "zones"` importée en méthode `look` → message « Cette recette règle des
+  correspondances entre zones : choisis la méthode « Zones » pour l'appliquer. » ;
+- `analysis_id` différent de celui de la paire → tout s'applique **sauf** `focus`
+  (les numéros de zones ne désignent plus les mêmes régions), et la barre d'état le dit ;
+- zone de `focus` inconnue → recette refusée, rien n'est modifié ;
+- `links` est ignoré en mode `look`, même mal formé.
 
-**Spécification.** `SPEC.md` §3.4. La version reste **2** : le bloc `look` est un ajout
-facultatif, les anciennes recettes ne changent pas de sens.
+`look.protect_vivid` n'a pas de curseur : c'est un réglage de recette. Le curseur
+« Préserver les couleurs vives » des ajustements s'y ajoute.
 
-**Tests.** `test_look_recipe_roundtrip`, `test_look_recipe_ignores_links`,
-`test_look_separation_out_of_range`, `test_look_focus_unknown_zone`,
-`test_v2_recipes_still_parse` (une recette de `docs/audit/data/` doit donner le même
-`Recipe` qu'avant, champs nouveaux à leur valeur par défaut).
-
-**Ne pas faire.** Changer `RECIPE_VERSION` ; rendre `look` obligatoire.
+Tests : `tests/test_look_recipe.py` (15 tests de format, dont
+`test_v2_recipes_still_parse` sur la vraie réponse d'IA du cas A) et
+`TestWindowLookRecipe` (7 tests) dans `tests/test_gui.py`. Vérifié dans la vraie
+fenêtre sur le cas A : export, remise à zéro, réimport → même état, aperçu identique.
 
 ---
 

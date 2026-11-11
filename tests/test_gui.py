@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import time
 from pathlib import Path
@@ -15,6 +16,8 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QApplication
 
 from stealzalut.config import Settings
+from stealzalut.core.look import LookTransferModel
+from stealzalut.core.recipe import parse_recipe
 from stealzalut.gui.main_window import MainWindow
 from stealzalut.gui.widgets.image_drop_zone import ImageDropZone
 from stealzalut.gui.widgets.preview_panel import PreviewPanel
@@ -707,5 +710,141 @@ class TestLookFocus:
             assert window._history.current.focus == ()
             assert window._reference_palette is None
             assert window._focus_btn.text() == "Référence ▾"
+        finally:
+            window.stop_workers()
+
+
+def _look_recipe(**look: Any) -> dict[str, Any]:
+    return {"format": "stealzalut.recipe", "version": 2, "mode": "look", "look": look}
+
+
+class TestWindowLookRecipe:
+    """Recipes of the look method: import, export, switching method."""
+
+    def _window(self, qapp: QApplication, settings: Settings, tmp_path: Path) -> Any:
+        return _look_window(
+            qapp,
+            settings,
+            TestLookBanner._coloured(tmp_path, "s.png", (60, 60, 160)),
+            TestLookBanner._coloured(tmp_path, "r.png", (30, 120, 60)),
+        )
+
+    def test_recipe_button_only_visible_for_look_recipe(
+        self, qapp: QApplication, default_settings: Settings, tmp_path: Path
+    ) -> None:
+        window = self._window(qapp, default_settings, tmp_path)
+        try:
+            assert not window._look_recipe_btn.isHidden()
+            with patch.object(window, "_run_transfer_preview"):
+                window._algo_combo.setCurrentIndex(window._algo_combo.findData("oklab"))
+            assert window._look_recipe_btn.isHidden()
+        finally:
+            window.stop_workers()
+
+    def test_apply_look_recipe(
+        self, qapp: QApplication, default_settings: Settings, tmp_path: Path
+    ) -> None:
+        window = self._window(qapp, default_settings, tmp_path)
+        try:
+            data = _look_recipe(separation=1.3, protect_vivid=0.4, focus={"R1": 0})
+            data["global"] = {"mix": 0.8}
+            data["finishing"] = {"vibrance": 0.3}
+            data["name"] = "Essai"
+            with patch.object(window, "_run_transfer_preview"):
+                assert window.apply_recipe(parse_recipe(data))
+            state = window._history.current
+            assert state.separation == 1.3 and state.protect_vivid == 0.4
+            assert state.focus == ((1, 0.0),) and state.params.mix == 0.8
+            assert state.finishing.vibrance == 0.3
+            assert window._separation_slider.value() == 130
+            assert window._focus_btn.text() == "Référence (1) ▾"
+            assert "Recette « Essai » appliquée en mode Rendu." in window._status_note
+            model = window._effective_model(window._model_cache[3])
+            assert isinstance(model, LookTransferModel)
+            assert model.separation == 1.3 and model.protect_vivid == 0.4
+
+            window.undo()
+            assert window._history.current.separation == 1.0
+            assert window._history.current.focus == ()
+        finally:
+            window.stop_workers()
+
+    def test_look_recipe_switches_to_the_look_method(
+        self, qapp: QApplication, default_settings: Settings, tmp_path: Path
+    ) -> None:
+        window = self._window(qapp, default_settings, tmp_path)
+        try:
+            with patch.object(window, "_run_transfer_preview"):
+                window._algo_combo.setCurrentIndex(window._algo_combo.findData("oklab"))
+                assert window.apply_recipe(parse_recipe(_look_recipe(separation=0.4)))
+            assert window._current_method == "look"
+            assert window._history.current.separation == 0.4
+        finally:
+            window.stop_workers()
+
+    def test_focus_of_another_pair_is_not_applied(
+        self, qapp: QApplication, default_settings: Settings, tmp_path: Path
+    ) -> None:
+        window = self._window(qapp, default_settings, tmp_path)
+        try:
+            data = _look_recipe(separation=0.7, focus={"R1": 0})
+            data["analysis_id"] = "00000000"
+            with patch.object(window, "_run_transfer_preview"):
+                assert window.apply_recipe(parse_recipe(data))
+            assert window._history.current.separation == 0.7
+            assert window._history.current.focus == ()
+            assert "Poids des zones de référence non repris" in window._status_note
+        finally:
+            window.stop_workers()
+
+    def test_unknown_focus_zone_is_refused(
+        self, qapp: QApplication, default_settings: Settings, tmp_path: Path
+    ) -> None:
+        window = self._window(qapp, default_settings, tmp_path)
+        try:
+            recipe = parse_recipe(_look_recipe(separation=0.7, focus={"R99": 0}))
+            with patch("stealzalut.gui.main_window.QMessageBox.critical") as critical:
+                assert not window.apply_recipe(recipe)
+            assert "R99" in critical.call_args.args[2]
+            assert window._history.current.separation == 1.0
+        finally:
+            window.stop_workers()
+
+    def test_zones_recipe_in_look_mode_is_explained(
+        self, qapp: QApplication, default_settings: Settings, tmp_path: Path
+    ) -> None:
+        window = self._window(qapp, default_settings, tmp_path)
+        try:
+            recipe = parse_recipe({"format": "stealzalut.recipe", "version": 2, "mode": "zones"})
+            with patch("stealzalut.gui.main_window.QMessageBox.information") as information:
+                assert not window.apply_recipe(recipe)
+            assert "Zones" in information.call_args.args[2]
+        finally:
+            window.stop_workers()
+
+    def test_export_then_import_gives_the_same_state(
+        self, qapp: QApplication, default_settings: Settings, tmp_path: Path
+    ) -> None:
+        window = self._window(qapp, default_settings, tmp_path)
+        try:
+            target = tmp_path / "look.szl"
+            with patch.object(window, "_run_transfer_preview"):
+                window._separation_slider.setValue(60)
+                window._set_focus(2, 2.0)
+                saved = window._history.current
+                with patch(
+                    "stealzalut.gui.main_window.QFileDialog.getSaveFileName",
+                    return_value=(str(target), ""),
+                ):
+                    window._on_export_recipe()
+                written = json.loads(target.read_text(encoding="utf-8"))
+                assert written["mode"] == "look"
+                assert written["look"] == {"separation": 0.6, "focus": {"R2": 2.0}}
+                assert written["analysis_id"] == window._look_analysis_id()
+
+                window._separation_slider.setValue(100)
+                window._clear_focus()
+                assert window.apply_recipe(parse_recipe(target.read_text(encoding="utf-8")))
+            assert window._history.current == saved
         finally:
             window.stop_workers()

@@ -40,6 +40,8 @@ class EditState:
     finishing: Finishing = field(default_factory=Finishing)
     separation: float = 1.0
     focus: tuple[tuple[int, float], ...] = ()
+    #: Protection of vivid colours in the look method; ``None`` = the model's own.
+    protect_vivid: float | None = None
 
 
 class History:

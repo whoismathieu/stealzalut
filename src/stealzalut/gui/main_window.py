@@ -1737,14 +1737,18 @@ class MainWindow(QMainWindow):
         logger.info("Exported to %s", path)
 
         msg = (
-            f"3D LUT saved to:\n{path}\n\n"
-            f"You can import this .cube file in Lightroom, "
-            f"DaVinci Resolve, Premiere Pro, Photoshop, or any compatible application."
+            f"LUT 3D enregistrée :\n{path}\n\n"
+            "Ce .cube attend une image sRGB déjà développée, et rend du sRGB.\n\n"
+            "• Lightroom / Camera Raw : à la création du profil, choisis l'espace "
+            "« sRGB » pour la table de couleurs.\n"
+            "• DaVinci Resolve, Premiere : applique-le sur une image en Rec.709 / sRGB "
+            "(après la conversion d'espace, pas sur du log ou du brut).\n\n"
+            "Dans un autre espace, les couleurs ne seront pas celles de l'aperçu."
         )
 
         QMessageBox.information(
             self,
-            "Export Complete",
+            "Export terminé",
             msg,
         )
 

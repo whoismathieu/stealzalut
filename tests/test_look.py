@@ -18,6 +18,7 @@ from stealzalut.core.look import (
     fit_look,
     fit_tone_curve,
     lattice_position,
+    look_diagnostics,
     sliced_transport,
     weighted_quantile,
 )
@@ -266,3 +267,30 @@ def test_registered_as_a_method() -> None:
     assert isinstance(model, LookTransferModel)
     out = model.apply(np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0], [0.5, 0.2, 0.7]]))
     assert out.shape == (3, 3) and out.min() >= 0.0 and out.max() <= 1.0
+
+
+# ── Diagnostics ──────────────────────────────────────────────────────────────
+
+
+def test_diagnostics_flag_a_grey_source() -> None:
+    grey = _noisy(np.full((120, 160, 3), 110, dtype=np.uint8), 4)
+    grey[:, 80:] = _noisy(np.full((120, 80, 3), 60, dtype=np.uint8), 5)
+    diagnostics = look_diagnostics(fit_look(grey, _green_dusk()), grey)
+    assert diagnostics.low_colour
+    assert diagnostics.source_colourful < 0.01
+
+
+def test_diagnostics_are_quiet_on_a_coloured_source(green_model: LookTransferModel) -> None:
+    diagnostics = look_diagnostics(green_model, _neutral_street())
+    assert not diagnostics.low_colour
+    assert diagnostics.source_colourful > 0.03
+    assert diagnostics.weak_bands == ()
+
+
+def test_diagnostics_list_untrusted_bands(green_model: LookTransferModel) -> None:
+    from dataclasses import replace
+
+    trust = green_model.band_trust.copy()
+    trust[[0, 11]] = 0.1
+    diagnostics = look_diagnostics(replace(green_model, band_trust=trust), _neutral_street())
+    assert diagnostics.weak_bands == (0, 11)

@@ -47,7 +47,12 @@ from stealzalut.core.ai_pack import build_prompt, write_pack
 from stealzalut.core.color_transfer import METHOD_LABELS, TransferModel
 from stealzalut.core.correspondence import CorrespondenceTable, Link
 from stealzalut.core.grading import GridResult
-from stealzalut.core.look import SEPARATION_RANGE, LookTransferModel
+from stealzalut.core.look import (
+    SEPARATION_RANGE,
+    LookDiagnostics,
+    LookTransferModel,
+    look_diagnostics,
+)
 from stealzalut.core.lut_engine import VALID_LUT_SIZES
 from stealzalut.core.palette import (
     DEFAULT_ZONE_COUNT,
@@ -139,6 +144,8 @@ class MainWindow(QMainWindow):
         # Colour variety of the reference (suggests the ambiance mode)
         self._reference_colours: ColourStats | None = None
         self._mode_hint_dismissed = False
+        # Known limits of the look method on the current pair
+        self._look_diagnostics: LookDiagnostics | None = None
         # Message kept in the status bar when the next preview arrives
         self._status_note = ""
 
@@ -502,6 +509,7 @@ class MainWindow(QMainWindow):
             self._algo_combo.blockSignals(False)
             return
         self._current_method = method
+        self._look_diagnostics = None
         self._drop_zone_editor()
         self._update_zone_panel_visibility()
         self._update_mode_hint()
@@ -528,12 +536,15 @@ class MainWindow(QMainWindow):
     def _on_image_changed(self, _image: Any) -> None:
         """Called when either source or reference image is loaded."""
         self._model_cache = None
+        self._look_diagnostics = None
+        self._mode_hint_dismissed = False
         self._drop_zone_editor()
         self._update_export_button_state()
         self._refresh_preview_if_ready()
 
     def _on_image_cleared(self) -> None:
         """Called when an image is removed."""
+        self._look_diagnostics = None
         self._update_mode_hint()
         self._model_cache = None
         self._drop_zone_editor()
@@ -803,7 +814,30 @@ class MainWindow(QMainWindow):
         self._mode_hint_dismissed = True
         self._update_mode_hint()
 
+    def _look_hint_text(self) -> str:
+        """The limit of the look method worth telling the user, if any."""
+        diagnostics = self._look_diagnostics
+        if diagnostics is None:
+            return ""
+        if diagnostics.low_colour:
+            return "La photo a peu de couleurs : la séparation aura peu d'effet."
+        if diagnostics.weak_bands:
+            return (
+                "La référence ne montre presque rien dans certains tons : "
+                "ils gardent leurs couleurs."
+            )
+        return ""
+
     def _update_mode_hint(self) -> None:
+        if self._current_method == "look":
+            # The look method protects vivid colours itself: no ambiance hint,
+            # only its own limits.
+            text = self._look_hint_text()
+            self._mode_hint_btn.hide()
+            self._mode_hint_label.setText(text)
+            self._mode_hint.setVisible(bool(text) and not self._mode_hint_dismissed)
+            return
+        self._mode_hint_btn.show()
         stats = self._reference_colours if self._reference_zone.has_image else None
         show = (
             stats is not None
@@ -1205,6 +1239,10 @@ class MainWindow(QMainWindow):
             self._model_cache = (*self._pending_model_key, model)
         if isinstance(model, ZoneTransferModel):
             self._setup_zone_editor(model)
+        source = self._source_zone.image_rgb
+        if isinstance(model, LookTransferModel) and source is not None:
+            self._look_diagnostics = look_diagnostics(model, source)
+            self._update_mode_hint()
 
     def _on_grid_ready(self, result: GridResult) -> None:
         self._last_grid_result = result

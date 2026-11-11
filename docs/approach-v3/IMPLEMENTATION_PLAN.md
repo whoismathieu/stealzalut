@@ -47,28 +47,21 @@ modèle de `TransferWorker`, corrige ce cas.
 
 ---
 
-## T04 — Dire les limites
+## T04 — Dire les limites · **fait**
+`LookDiagnostics`, `look_diagnostics`, `LOW_COLOUR_SHARE`, `WEAK_BAND_TRUST` dans
+`core/look.py` ; bandeau dans `MainWindow` (`_look_diagnostics`, `_look_hint_text`,
+`_update_mode_hint`). En méthode `look`, le bandeau « Passer en Ambiance » n'apparaît
+plus (la méthode protège elle-même les couleurs vives) et son bouton est masqué.
+Tests : trois dans `tests/test_look.py` (`test_diagnostics_*`), `TestLookBanner`
+(trois) dans `tests/test_gui.py`.
 
-**But.** Afficher les deux limites de `DESIGN.md` §8.
+Mesuré sur les photos réelles : cas A et B, part colorée de la source 0,136 → pas de
+bandeau ; paire n° 6, 0,011 → bandeau ; paire n° 3, 0,036 → pas de bandeau (juste
+au-dessus du seuil de 0,03).
 
-**Fichiers.** `core/look.py` (`LookDiagnostics`, `look_diagnostics`, `LOW_COLOUR_SHARE` :
-`SPEC.md` §3.1), `gui/main_window.py`, `tests/test_look.py`, `tests/test_gui.py`.
-
-**Algorithme.** `source_colourful = colour_stats(source).colourful` ; `weak_bands` =
-indices où `model.band_trust < 0.5` ; `low_colour = source_colourful < 0.03`.
-
-**Interface.** Réutiliser le bandeau existant (`_mode_hint`, `_mode_hint_label`, ≈ l.
-742–785) : en méthode `look`, afficher le texte de `SPEC.md` §4 correspondant, sans
-bouton d'action. Si les deux limites sont vraies, afficher celle de la source.
-
-**Tests.** `test_diagnostics_flag_a_grey_source` (image grise uniforme + bruit →
-`low_colour`), `test_diagnostics_are_quiet_on_a_coloured_source`,
-`test_look_banner_shows_low_colour` (GUI).
-
-**Oracles.** Source du cas A : `source_colourful = 0,138` (± 0,005) → pas de bandeau.
-Source de la paire n° 6 (`IMG_20260810_184343.jpg`) : 0,012 → bandeau.
-
-**Ne pas faire.** Bloquer l'export ; modifier le rendu.
+Limite connue : le message « tons absents » ne s'est déclenché sur **aucune** des huit
+paires (la courbe de tons envoie toujours les bandes dans la plage de la référence). Il
+n'est couvert que par un test qui force `band_trust`.
 
 ---
 

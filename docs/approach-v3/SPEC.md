@@ -146,7 +146,7 @@ Ajustement ≤ 0,5 s ; cuisson 33³ ≤ 0,3 s ; 64³ ≤ 0,8 s.
 
 ## 3. Modules à créer ou étendre (voir le plan pour l'ordre)
 
-### 3.1. `core/look.py` — diagnostics (T04)
+### 3.1. `core/look.py` — diagnostics (T04, livré)
 ```python
 @dataclass(frozen=True, slots=True)
 class LookDiagnostics:
@@ -211,8 +211,8 @@ focus: tuple[tuple[int, float], ...] = ()   # (zone de référence, poids), T05
 | Liste des méthodes (livré) | `Rendu (tons et couleurs de la référence)` |
 | Libellé du curseur (livré) | `Séparation :` |
 | Infobulle du curseur (livré) | `Écarte les couleurs proches du gris vers les couleurs de la référence.\n0 : seulement la dominante de chaque ton. 1 : ce que montre la référence. Au-delà : accentué.` |
-| Bandeau, source peu colorée (T04) | `La photo a peu de couleurs : la séparation aura peu d'effet.` |
-| Bandeau, tons absents (T04) | `La référence ne montre presque rien dans certains tons : ils gardent leurs couleurs.` |
+| Bandeau, source peu colorée (livré) | `La photo a peu de couleurs : la séparation aura peu d'effet.` |
+| Bandeau, tons absents (livré) | `La référence ne montre presque rien dans certains tons : ils gardent leurs couleurs.` |
 | Menu des zones de référence (T05) | `Ignorer cette zone pour le rendu` / `Privilégier cette zone pour le rendu` / `Poids normal` |
 
 ## 5. Glossaire

@@ -89,6 +89,11 @@ MONOCHROME_VIVID_PROTECTION = 0.8
 #: Range of the separation setting.
 SEPARATION_RANGE: tuple[float, float] = (0.0, 1.5)
 
+#: Share of coloured source pixels below which there is little to separate.
+LOW_COLOUR_SHARE = 0.03
+#: Trust below which a tone band counts as not covered by the reference.
+WEAK_BAND_TRUST = 0.5
+
 _GOLDEN = 0.6180339887498949
 
 
@@ -383,3 +388,30 @@ def fit_look(
         band_trust=trust,
         protect_vivid=MONOCHROME_VIVID_PROTECTION if monochrome else 0.0,
     )
+
+
+# ── Diagnostics ──────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class LookDiagnostics:
+    """What limits a look on this pair, for the UI to show.
+
+    Attributes:
+        source_colourful: Share of coloured pixels in the source.
+        weak_bands: Tone bands (indices) the reference barely covers: their
+            colours are left almost untouched.
+        low_colour: The source is nearly grey: separation has little to
+            work with.
+    """
+
+    source_colourful: float
+    weak_bands: tuple[int, ...]
+    low_colour: bool
+
+
+def look_diagnostics(model: LookTransferModel, source: NDArray[np.uint8]) -> LookDiagnostics:
+    """Measure the known limits of *model* on its *source* image (RGB uint8)."""
+    colourful = colour_stats(source).colourful
+    weak = tuple(int(m) for m in np.flatnonzero(model.band_trust < WEAK_BAND_TRUST))
+    return LookDiagnostics(colourful, weak, colourful < LOW_COLOUR_SHARE)

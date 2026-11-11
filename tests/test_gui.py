@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 from typing import Any, cast
+from unittest.mock import patch
 
 import cv2
 import numpy as np
@@ -517,5 +519,95 @@ class TestSeparationSlider:
             window.undo()
             assert window._history.current.separation == 1.0
             assert window._separation_slider.value() == 100
+        finally:
+            window.stop_workers()
+
+
+def _write_rgb(path: Path, rgb: np.ndarray) -> Path:
+    cv2.imwrite(str(path), cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+    return path
+
+
+def _look_window(qapp: QApplication, settings: Settings, source: Path, reference: Path) -> Any:
+    """A window in the look method, once the model of the pair is fitted."""
+    window = MainWindow(settings=settings)
+    window._algo_combo.setCurrentIndex(window._algo_combo.findData("look"))
+    window._source_zone.load_from_path(source)
+    window._reference_zone.load_from_path(reference)
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline and not (
+        window._look_diagnostics is not None
+        and not (window._transfer_worker and window._transfer_worker.isRunning())
+    ):
+        qapp.processEvents()
+        time.sleep(0.01)
+    return window
+
+
+class TestLookBanner:
+    """The look method tells its limits instead of hiding them."""
+
+    @staticmethod
+    def _grey(tmp_path: Path) -> Path:
+        rng = np.random.default_rng(0)
+        img = np.full((96, 128, 3), 110.0)
+        img[:, 64:] = 50.0
+        noisy = np.clip(img + rng.normal(0, 2, img.shape), 0, 255).astype(np.uint8)
+        return _write_rgb(tmp_path / "grey.png", noisy)
+
+    @staticmethod
+    def _coloured(tmp_path: Path, name: str, tint: tuple[int, int, int]) -> Path:
+        rng = np.random.default_rng(1)
+        img = np.zeros((96, 128, 3))
+        img[:48] = tint
+        img[48:] = (200, 60, 40)
+        img[40:56, 40:90] = (40, 90, 220)
+        return _write_rgb(
+            tmp_path / name, np.clip(img + rng.normal(0, 3, img.shape), 0, 255).astype(np.uint8)
+        )
+
+    def test_look_banner_shows_low_colour(
+        self, qapp: QApplication, default_settings: Settings, tmp_path: Path
+    ) -> None:
+        reference = self._coloured(tmp_path, "r.png", (30, 120, 60))
+        window = _look_window(qapp, default_settings, self._grey(tmp_path), reference)
+        try:
+            assert not window._mode_hint.isHidden()
+            assert window._mode_hint_label.text() == (
+                "La photo a peu de couleurs : la séparation aura peu d'effet."
+            )
+            assert window._mode_hint_btn.isHidden()
+            window._dismiss_mode_hint()
+            assert window._mode_hint.isHidden()
+        finally:
+            window.stop_workers()
+
+    def test_look_banner_is_quiet_on_a_coloured_source(
+        self, qapp: QApplication, default_settings: Settings, tmp_path: Path
+    ) -> None:
+        window = _look_window(
+            qapp,
+            default_settings,
+            self._coloured(tmp_path, "s.png", (60, 60, 160)),
+            self._coloured(tmp_path, "r.png", (30, 120, 60)),
+        )
+        try:
+            assert window._look_diagnostics is not None
+            assert not window._look_diagnostics.low_colour
+            assert window._mode_hint.isHidden()
+        finally:
+            window.stop_workers()
+
+    def test_leaving_look_restores_the_ambiance_button(
+        self, qapp: QApplication, default_settings: Settings, tmp_path: Path
+    ) -> None:
+        reference = self._coloured(tmp_path, "r.png", (30, 120, 60))
+        window = _look_window(qapp, default_settings, self._grey(tmp_path), reference)
+        try:
+            with patch.object(window, "_run_transfer_preview"):
+                window._algo_combo.setCurrentIndex(window._algo_combo.findData("oklab"))
+            assert window._look_diagnostics is None
+            assert window._mode_hint.isHidden()
+            assert not window._mode_hint_btn.isHidden()
         finally:
             window.stop_workers()

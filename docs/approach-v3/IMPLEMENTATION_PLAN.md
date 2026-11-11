@@ -292,6 +292,57 @@ flottant, aperçu géré en couleur) : c'est ce qui lèverait la deuxième rése
 
 ---
 
+## T11 — Banc de mesure à vérité connue · **outil fait, pas encore lancé sur de vraies photos**
+
+**Pourquoi.** Les constantes du mode `look` ont été réglées à l'œil sur huit paires
+urbaines de nuit. Ajouter des images et régler encore à l'œil ne corrige pas ce défaut.
+
+**Principe.** Prendre une photo P, lui appliquer un étalonnage connu G ; donner au
+moteur une photo Q comme source et G(P) comme référence ; comparer sa sortie à G(Q),
+qui est la réponse exacte. Score : **résidu** = erreur de la méthode / erreur de ne
+rien faire (0 : retrouvé ; 1 : inutile ; > 1 : pire que rien).
+
+Deux régimes, rapportés séparément :
+- **même contenu** (Q = P) : l'étalonnage est retrouvable exactement ; le résidu mesure
+  ce que la méthode perd d'elle-même ;
+- **autre contenu** (Q ≠ P) : une méthode qui copie les statistiques de la référence
+  copie aussi son *sujet*. Le résidu ajoute ce sur-transfert.
+
+**Fait.** `src/stealzalut/devtools/ground_truth.py` (outil de développement, non utilisé
+par l'application) : `Grade`, `GRADES` (8 étalonnages : ton seul, couleur seule, les
+deux), `measure`, `pairs`, `evaluate`, `summarize`, `by_grade`, `report`,
+`look_constants` (remplace des constantes de `core/look.py` le temps d'une mesure),
+`load_folder`, `main`. Tests : `tests/test_ground_truth.py` (28).
+
+```bash
+PYTHONPATH=src .venv/Scripts/python.exe -m stealzalut.devtools.ground_truth <dossier> \
+    [--methods look,zones,oklab] [--others 2] [--set BANDS=8] [--json cas.json]
+```
+
+**Ce que le banc ne mesure pas.** Le goût. Un étalonnage est ici une seule fonction de
+la couleur ; rien ne dit ce qui rend un rendu beau. Et le régime « autre contenu »
+pose comme idéal « l'étalonnage seul » : copier l'exposition de la référence y compte
+comme une erreur, alors qu'un utilisateur peut le vouloir.
+
+**Premières indications, sur trois images synthétiques — ne pas calibrer dessus.**
+- Même contenu : `look` 0,17, `oklab` 0,23, `zones` 0,15. Le mode `look` retrouve très
+  bien le ton (contraste 0,07, sombre 0,02) mais **mal un simple gain de saturation**
+  (0,51, contre 0,06 pour `oklab`) : le lissage du champ de chroma l'écrase.
+- Autre contenu : les trois méthodes sont à 2,7–3,1, donc **pires que ne rien faire**.
+  Les trois scènes synthétiques ont des palettes sans rapport, ce qui exagère l'effet ;
+  mais c'est le signe attendu d'un défaut de fond : toute méthode qui apparie des
+  distributions confond l'étalonnage et le sujet.
+
+**Suite, une fois un dossier de photos variées fourni par Mathieu.**
+1. Lancer le banc ; garder la sortie dans `docs/approach-v3/`.
+2. Séparer les photos en deux lots (réglage / contrôle) avant de toucher une constante.
+3. Traiter d'abord les deux défauts ci-dessus s'ils se confirment sur de vraies photos.
+4. Piste pour le sur-transfert : lire l'étalonnage de la référence comme un **écart à
+   des statistiques moyennes de photos** plutôt que comme un écart à la source. Cela
+   demande un corpus de photos pour établir ces moyennes. Non prototypé.
+
+---
+
 ## Phase 2 — non planifiée
 Sorties avec masques (une LUT par région + caches PNG, ou image gradée). Préalable :
 une segmentation fiable (pinceau, ou modèle ONNX optionnel avec licence vérifiée) et une

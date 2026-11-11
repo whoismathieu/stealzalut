@@ -11,6 +11,7 @@ Branche : `approach-v3` (partie de `main` au commit `fd49d2c`). Rien n'est pouss
 | D. Validation | prompt du pack IA (T07) à essayer sur une vraie IA, cas A et B | **à faire par Mathieu** |
 | D. Fidélité de l'entrée | T09 : profils couleur convertis en sRGB, bandeau pour les sources RAW, export de l'image gradée | **fait** (456 tests) ; l'accord avec Lightroom reste **à vérifier par Mathieu** |
 | D. Espace du `.cube` | T10 : sRGB, Display P3, Adobe RGB, ProPhoto, Rec.709 γ 2,4 | **fait** (502 tests) ; accord avec Lightroom et Resolve **à vérifier par Mathieu** |
+| E. Calibrage | T11 : banc de mesure à vérité connue (`stealzalut.devtools.ground_truth`) | **outil fait** (530 tests) ; à lancer sur un dossier de photos variées **fourni par Mathieu** |
 | — | garder ou retirer « Ambiance », phase 2 (masques à la sortie) | **décision de Mathieu** |
 
 ## Pour reprendre

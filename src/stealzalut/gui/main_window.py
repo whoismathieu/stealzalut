@@ -57,6 +57,7 @@ from stealzalut.core.color_transfer import METHOD_LABELS, TransferModel
 from stealzalut.core.correspondence import CorrespondenceTable, Link
 from stealzalut.core.grading import GridResult, build_grid
 from stealzalut.core.look import (
+    LOCALITY_RANGE,
     SEPARATION_RANGE,
     LookDiagnostics,
     LookTransferModel,
@@ -118,6 +119,7 @@ logger = logging.getLogger(__name__)
 EDIT_DEBOUNCE_MS = 75
 _TAU_STEPS = 100  # slider units per τ unit
 _SEPARATION_STEPS = 100  # slider units per separation unit
+_LOCALITY_STEPS = 100  # slider units for a locality of 1
 _JPEG = (".jpg", ".jpeg")
 #: Choices of the focus menu: label, weight of the reference zone.
 _FOCUS_CHOICES: tuple[tuple[str, float], ...] = (
@@ -315,6 +317,33 @@ class MainWindow(QMainWindow):
         self._separation_value.setMinimumWidth(36)
         look_layout.addWidget(self._separation_value)
         self._refresh_separation_label()
+
+        # Locality of the look method: how far a colour may be moved
+        locality_tooltip = (
+            "Limite de combien chaque couleur peut être déplacée.\n"
+            "0 % : le rendu va jusqu'au bout vers la référence, quitte à donner à ton sujet\n"
+            "les couleurs du sujet de la référence (un ciel qui prend la couleur d'une pelouse).\n"
+            "Plus haut : ta photo garde ses couleurs et sa luminosité propres et ne prend\n"
+            "de la référence que les écarts modérés. À monter quand le rendu déforme le sujet."
+        )
+        self._locality_label = QLabel("Fidélité à ma photo :")
+        self._locality_label.setObjectName("controlLabel")
+        self._locality_label.setToolTip(locality_tooltip)
+        look_layout.addWidget(self._locality_label)
+        self._locality_slider = QSlider(Qt.Orientation.Horizontal)
+        self._locality_slider.setObjectName("localitySlider")
+        self._locality_slider.setRange(
+            round(LOCALITY_RANGE[0] * _LOCALITY_STEPS), round(LOCALITY_RANGE[1] * _LOCALITY_STEPS)
+        )
+        self._locality_slider.setValue(0)
+        self._locality_slider.setFixedWidth(140)
+        self._locality_slider.setToolTip(locality_tooltip)
+        look_layout.addWidget(self._locality_slider)
+        self._locality_value = QLabel()
+        self._locality_value.setObjectName("adjustValue")
+        self._locality_value.setMinimumWidth(40)
+        look_layout.addWidget(self._locality_value)
+        self._refresh_locality_label()
 
         # What the look method reads in the reference (hidden for other methods).
         # The menu is popped up by hand, like the import menu (Qt font warning).
@@ -587,6 +616,7 @@ class MainWindow(QMainWindow):
         self._zone_count_spin.valueChanged.connect(self._on_zone_count_changed)
         self._tau_slider.valueChanged.connect(self._on_tau_changed)
         self._separation_slider.valueChanged.connect(self._on_separation_changed)
+        self._locality_slider.valueChanged.connect(self._on_locality_changed)
         self._look_pack_action.triggered.connect(self._on_prepare_look_pack)
         self._look_paste_action.triggered.connect(self._on_paste_recipe)
         self._look_open_action.triggered.connect(self._on_open_recipe)
@@ -884,6 +914,7 @@ class MainWindow(QMainWindow):
                 state.separation,
                 model.protect_vivid,
                 state.focus,
+                state.locality,
             )
         except OSError as exc:
             QMessageBox.critical(self, "Pack non créé", f"Impossible d'écrire le pack :\n{exc}")
@@ -1102,6 +1133,7 @@ class MainWindow(QMainWindow):
             protect_vivid=(
                 current.protect_vivid if recipe.protect_vivid is None else recipe.protect_vivid
             ),
+            locality=current.locality if recipe.locality is None else recipe.locality,
             focus=focus,
         )
         if self._history.push(state):
@@ -1128,6 +1160,7 @@ class MainWindow(QMainWindow):
             self._look_analysis_id(),
             name=Path(path).stem,
             finishing=state.finishing,
+            locality=state.locality,
         )
         try:
             Path(path).write_text(dump_recipe(data), encoding="utf-8")
@@ -1344,6 +1377,13 @@ class MainWindow(QMainWindow):
             self._edit_timer.start()
         self._update_undo_buttons()
 
+    def _on_locality_changed(self, _value: int) -> None:
+        self._refresh_locality_label()
+        state = replace(self._history.current, locality=self._locality())
+        if self._history.push(state, "locality"):
+            self._edit_timer.start()
+        self._update_undo_buttons()
+
     def undo(self) -> None:
         """Undo the last correspondence or slider change."""
         state = self._history.undo()
@@ -1369,6 +1409,10 @@ class MainWindow(QMainWindow):
         self._separation_slider.setValue(round(state.separation * _SEPARATION_STEPS))
         self._separation_slider.blockSignals(False)
         self._refresh_separation_label()
+        self._locality_slider.blockSignals(True)
+        self._locality_slider.setValue(round(state.locality * _LOCALITY_STEPS))
+        self._locality_slider.blockSignals(False)
+        self._refresh_locality_label()
         self._refresh_focus_button()
         self._show_editor_state()
         self._update_undo_buttons()
@@ -1468,7 +1512,9 @@ class MainWindow(QMainWindow):
         """*model* with the user's correspondences and separation settings."""
         state = self._history.current
         if isinstance(model, LookTransferModel):
-            return _prepare_model(state.tau, state.separation, state.protect_vivid, model)
+            return _prepare_model(
+                state.tau, state.separation, state.protect_vivid, state.locality, model
+            )
         if not isinstance(model, ZoneTransferModel):
             return model
         table = state.table
@@ -1573,6 +1619,12 @@ class MainWindow(QMainWindow):
     def _refresh_separation_label(self) -> None:
         self._separation_value.setText(f"{self._separation():.2f}")
 
+    def _locality(self) -> float:
+        return self._locality_slider.value() / _LOCALITY_STEPS
+
+    def _refresh_locality_label(self) -> None:
+        self._locality_value.setText(f"{round(self._locality() * 100)} %")
+
     def _update_zone_panel_visibility(self) -> None:
         self._corr_group.setVisible(self._current_method == "zones")
         is_look = self._current_method == "look"
@@ -1580,6 +1632,9 @@ class MainWindow(QMainWindow):
             self._separation_label,
             self._separation_slider,
             self._separation_value,
+            self._locality_label,
+            self._locality_slider,
+            self._locality_value,
             self._focus_btn,
             self._look_recipe_btn,
         ):
@@ -1642,6 +1697,7 @@ class MainWindow(QMainWindow):
                 self._history.current.tau,
                 self._history.current.separation,
                 self._history.current.protect_vivid,
+                self._history.current.locality,
             ),
             reference_weights=self._reference_weights(),
             space=self._cube_space(),
@@ -1840,12 +1896,16 @@ class MainWindow(QMainWindow):
 
 
 def _prepare_model(
-    tau: float, separation: float, protect_vivid: float | None, model: TransferModel
+    tau: float,
+    separation: float,
+    protect_vivid: float | None,
+    locality: float,
+    model: TransferModel,
 ) -> TransferModel:
     """Apply the user's separation settings to a freshly fitted model."""
     if isinstance(model, ZoneTransferModel):
         return model.with_params(ZoneBakeParams(tau=tau))
     if isinstance(model, LookTransferModel):
-        model = model.with_separation(separation)
+        model = model.with_separation(separation).with_locality(locality)
         return model if protect_vivid is None else model.with_protect_vivid(protect_vivid)
     return model

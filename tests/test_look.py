@@ -14,8 +14,10 @@ from stealzalut.core.look import (
     AB_CELLS,
     BANDS,
     MONOCHROME_VIVID_PROTECTION,
+    REACH_RANGE,
     SEPARATION_RANGE,
     STRETCH_LIMITS,
+    TONE_REACH_RATIO,
     TONE_SAMPLES,
     LookTransferModel,
     fit_look,
@@ -448,3 +450,71 @@ def test_a_saturated_copy_of_a_monochrome_picture_is_recovered() -> None:
     error = np.hypot(*(out[:, 1:] - truth[:, 1:]).T).mean()
     nothing = np.hypot(*(source.flat[:, 1:] - truth[:, 1:]).T).mean()
     assert error < 0.3 * nothing
+
+
+# ── Locality: how far a colour may be moved ──────────────────────────────────
+
+
+def test_no_locality_is_the_plain_model(green_model: LookTransferModel) -> None:
+    assert green_model.reach is None
+    assert green_model.with_locality(0.0).reach is None
+    lab = srgb_to_oklab(np.random.default_rng(0).random((200, 3)))
+    np.testing.assert_array_equal(
+        green_model.with_locality(0.0).apply_lab(lab), green_model.apply_lab(lab)
+    )
+
+
+def test_locality_sets_the_reach(green_model: LookTransferModel) -> None:
+    far, near = REACH_RANGE
+    assert green_model.with_locality(1.0).reach == pytest.approx(near)
+    assert green_model.with_locality(7.0).reach == pytest.approx(near)  # clamped
+    assert far > green_model.with_locality(0.3).reach > green_model.with_locality(0.6).reach > near
+    assert green_model.with_locality(0.5).with_locality(0.0).reach is None
+
+
+def test_reach_bounds_the_displacement(green_model: LookTransferModel) -> None:
+    lab = srgb_to_oklab(np.random.default_rng(1).random((3000, 3)))
+    plain = green_model.apply_lab(lab) - lab
+    assert np.abs(plain[:, 0]).max() > 0.1  # the look itself moves tones a lot
+    for locality in (0.4, 1.0):
+        local = green_model.with_locality(locality)
+        assert local.reach is not None
+        moved = local.apply_lab(lab) - lab
+        assert np.abs(moved[:, 0]).max() <= TONE_REACH_RATIO * local.reach + 1e-12
+        assert np.hypot(moved[:, 1], moved[:, 2]).max() <= local.reach + 1e-12
+        # Same direction as the plain look, never further
+        assert (np.abs(moved[:, 0]) <= np.abs(plain[:, 0]) + 1e-12).all()
+        assert (moved[:, 0] * plain[:, 0] >= -1e-15).all()
+
+
+def test_small_displacements_pass_almost_unchanged(green_model: LookTransferModel) -> None:
+    """A grade moves colours a little: the limit must not eat it."""
+    local = replace(green_model, reach=0.2)
+    lab = srgb_to_oklab(np.random.default_rng(2).random((3000, 3)))
+    plain, kept = green_model.chroma_shift(lab), local.chroma_shift(lab)
+    small = np.hypot(plain[:, 0], plain[:, 1]) < 0.03
+    assert small.any()
+    np.testing.assert_allclose(kept[small], plain[small], atol=3e-4)
+
+
+@pytest.mark.parametrize("locality", [0.2, 0.6, 1.0])
+def test_tone_stays_increasing_with_locality(
+    green_model: LookTransferModel, locality: float
+) -> None:
+    lightness = np.linspace(0.0, 1.0, 513)
+    assert (np.diff(green_model.with_locality(locality).tone(lightness)) > 0.0).all()
+
+
+@pytest.mark.parametrize("locality", [0.3, 1.0])
+def test_grid_never_folds_with_locality(green_model: LookTransferModel, locality: float) -> None:
+    assert build_grid(green_model.with_locality(locality), 33).fold_fraction == 0.0
+
+
+def test_locality_keeps_the_picture_closer(green_model: LookTransferModel) -> None:
+    src = _neutral_street()
+    lab = srgb_to_oklab(src.reshape(-1, 3) / 255.0)
+    distance = [
+        float(np.linalg.norm(green_model.with_locality(t).apply_lab(lab) - lab, axis=1).mean())
+        for t in (0.0, 0.5, 1.0)
+    ]
+    assert distance[0] > distance[1] > distance[2] > 0.0

@@ -163,6 +163,42 @@ transmet l'écart d'entrée, elle ne l'amplifie pas. Si l'hôte lui donne une im
 différente du JPEG, la sortie diffère d'autant : cela se règle à l'entrée (export
 intermédiaire), pas dans la courbe.
 
+## Réglage « Fidélité à ma photo » (localité) intégré au mode `look`
+
+Forme retenue : une **limite douce du déplacement**. Lightness :
+`L + r_L · tanh((T(L) − L) / r_L)` ; chroma : la norme du déplacement est ramenée à
+`r · tanh(|d| / r)`. Un petit déplacement passe intact, un grand plafonne à la portée `r`
+(`r_L = 2 r`, `TONE_REACH_RATIO`). La pente de la courbe de ton reste entre 1 et celle de
+la courbe d'origine : aucun repli possible. Rien n'est réajusté : le curseur ne recuit
+que la grille. Le curseur (0 à 100 %) donne `r = 0,30 · (0,02 / 0,30)^t` ; à 0 il n'y a
+pas de limite (comportement inchangé, valeur par défaut).
+
+Mesuré sur le modèle (script `prototypes/bench_reach.py`), erreur rapportée à celle de ne
+rien faire. « L / couleur » : rapports des erreurs moyennes ; « résidu » : moyenne des
+rapports par cas.
+
+| Portée `r` (curseur) | Réglage, même contenu : L / couleur / résidu | Réglage, autre contenu : L / couleur / résidu / mieux que rien | Contrôle, même contenu : résidu | Contrôle, autre contenu : résidu / mieux que rien |
+|---|---|---|---|---|
+| sans limite (0 %) | 0,02 / 0,10 / 0,06 | 2,55 / 2,90 / 4,20 / 14 % | 0,05 | 6,30 / 9 % |
+| 0,12 (34 %) | 0,07 / 0,13 / 0,09 | 2,02 / 2,56 / 3,41 / 20 % | 0,08 | 4,58 / 14 % |
+| 0,08 (49 %) | 0,13 / 0,16 / 0,12 | 1,74 / 2,30 / 2,94 / 22 % | 0,11 | 3,74 / 17 % |
+| 0,05 (66 %) | 0,24 / 0,22 / 0,19 | 1,44 / 1,91 / 2,34 / 27 % | 0,18 | 2,81 / 19 % |
+| 0,035 (79 %) | 0,35 / 0,30 / 0,27 | 1,27 / 1,63 / 1,93 / 38 % | 0,26 | 2,23 / 27 % |
+| 0,02 (100 %) | 0,54 / 0,45 / 0,43 | 1,12 / 1,27 / 1,45 / 46 % | 0,42 | 1,60 / 38 % |
+
+**Lecture.** Les deux lots concordent. C'est un curseur de compromis, pas une solution :
+à fond, le dommage sur un autre contenu est divisé par trois à quatre, sans passer sous 1
+en moyenne, et un étalonnage n'est plus retrouvé qu'à moitié. Par rapport au prototype
+de transport local (ρ = 0,03 : même contenu 0,85 / 0,50, autre contenu 1,01 / 1,32,
+43 %), la limite douce garde nettement mieux le même contenu (0,54 / 0,45) pour un
+résultat voisin sur un autre contenu (1,12 / 1,27, 46 %), sans coût de calcul ni risque
+de repli. Rapport ton / chroma : 1 protège mieux un autre contenu (résidu 1,24 à fond)
+mais perd davantage sur le même (0,56) ; 3 fait l'inverse ; 2 retenu sur le lot de
+réglage.
+
+**Non mesuré.** L'effet sur les paires réelles source → argentique n'est jugé qu'à l'œil :
+c'est à Mathieu de dire à quelle valeur le curseur est utile.
+
 ## Conséquences
 
 - **Ne pas recalibrer les constantes de `look` sur ce banc.** Le régime « même
@@ -170,9 +206,8 @@ intermédiaire), pas dans la courbe.
 - Le problème est l'**identifiabilité** : à partir d'une seule image, rien ne
   distingue l'étalonnage du sujet. Trois essais mesurés : photo moyenne (rejeté),
   invariants (rejeté), transport local (réduit le défaut sans le supprimer).
-- **Piste ouverte : un rayon de localité dans le mode `look`**, exposé comme réglage
-  (« respecter ma photo ↔ coller à la référence »). À décider avec Mathieu avant
-  d'intégrer : le gain n'est pas net et le comportement par défaut changerait.
+- **Fait : curseur de localité dans le mode `look`** (« Fidélité à ma photo »),
+  désactivé par défaut ; voir la section ci-dessus.
 - Ce qu'aucun essai automatique ne fera : décider que « ce vert est de l'herbe, pas une
   dominante ». C'est un jugement sur le contenu ; le pont IA (T07) est le seul endroit
   du produit qui peut le porter.

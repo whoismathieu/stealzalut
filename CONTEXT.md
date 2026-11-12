@@ -133,7 +133,7 @@ paires : trop sensible.
 
 | Sujet | État |
 |---|---|
-| Intégrer un **rayon de localité** au mode `look`, comme réglage | **reporté par Mathieu** ; à reprendre plus tard |
+| Curseur « Fidélité à ma photo » du mode `look` (`with_locality`, limite douce du déplacement, 0 % par défaut ; `look.locality` dans les recettes) | **fait** ; à fond, autre contenu 4,2 → 1,45, même contenu 0,06 → 0,43. Valeur utile à juger à l'œil par Mathieu |
 | Seuil du détecteur monochrome | à revoir |
 | Prompt du pack IA du mode `look` | jamais essayé sur une vraie IA |
 | Accord du `.cube` avec Lightroom / Resolve (espaces, courbes) | à tester par Mathieu |

@@ -95,6 +95,12 @@ MONOCHROME_VIVID_PROTECTION = 0.8
 #: protection sets in: a vivid colour of that same hue *is* the look and
 #: follows it; colours of other hues are the ones a uniform filter would kill.
 PROTECT_HUE_RANGE: tuple[float, float] = (15.0, 45.0)
+#: Range of the locality setting (0 = follow the reference all the way).
+LOCALITY_RANGE: tuple[float, float] = (0.0, 1.0)
+#: Reach (largest chroma displacement, Oklab) at the smallest and at full locality.
+REACH_RANGE: tuple[float, float] = (0.30, 0.02)
+#: Reach of the tone curve, as a multiple of the chroma reach.
+TONE_REACH_RATIO = 2.0
 #: Range of the weight of a reference zone (0 = ignored, 1 = normal).
 FOCUS_RANGE: tuple[float, float] = (0.0, 4.0)
 #: Range of the separation setting.
@@ -301,6 +307,10 @@ class LookTransferModel(TransferModel):
         protect_hue: Hue (degrees, Oklch) the protection spares: vivid
             colours within :data:`PROTECT_HUE_RANGE` of it are not protected.
             ``None`` = every vivid colour is protected alike.
+        reach: Largest chroma displacement a colour may receive (Oklab);
+            lightness may move by :data:`TONE_REACH_RATIO` times as much.
+            The limit is soft: small displacements pass unchanged, large
+            ones level off.  ``None`` = no limit.
     """
 
     tone_x: F64
@@ -314,6 +324,7 @@ class LookTransferModel(TransferModel):
     separation: float = 1.0
     protect_vivid: float = 0.0
     protect_hue: float | None = None
+    reach: float | None = None
 
     @property
     def method(self) -> str:
@@ -328,9 +339,35 @@ class LookTransferModel(TransferModel):
         """Same look, different protection of vivid source colours."""
         return replace(self, protect_vivid=float(np.clip(protect_vivid, 0.0, 1.0)))
 
+    def with_locality(self, locality: float) -> LookTransferModel:
+        """Same look, kept closer to the picture it is applied to (no refit).
+
+        Two unrelated pictures differ far more than a grade moves colours:
+        matching their distributions also transfers the subject (a sky takes
+        the colour of the reference's grass).  A grade moves every colour a
+        little; a difference of subject asks for large moves.  Limiting how
+        far a colour may go keeps the first and gives up the second.
+
+        Args:
+            locality: 0 = follow the reference all the way (no limit);
+                1 = stay close to the picture (reach ``REACH_RANGE[1]``).
+        """
+        lo, hi = LOCALITY_RANGE
+        t = float(np.clip(locality, lo, hi))
+        if t <= 0.0:
+            return replace(self, reach=None)
+        far, near = REACH_RANGE
+        return replace(self, reach=float(far * (near / far) ** t))
+
     def tone(self, lightness: F64) -> F64:
         """Output lightness for input lightness values ``(N,)``."""
-        return np.interp(lightness, self.tone_x, self.tone_y)
+        out = np.interp(lightness, self.tone_x, self.tone_y)
+        if self.reach is None:
+            return out
+        # Soft limit of the displacement; the slope stays between 1 and the
+        # curve's own, so the result is still increasing
+        limit = TONE_REACH_RATIO * self.reach
+        return lightness + limit * np.tanh((out - lightness) / limit)
 
     def chroma_shift(self, lab: F64) -> F64:
         """Chroma displacement ``(N, 2)`` for Oklab colours *lab* ``(N, 3)``."""
@@ -363,6 +400,10 @@ class LookTransferModel(TransferModel):
                 away = np.abs((hue - self.protect_hue + 180.0) % 360.0 - 180.0)
                 kept = kept * _smoothstep(away, *PROTECT_HUE_RANGE)
             shift *= (1.0 - kept)[:, None]
+        if self.reach is not None:
+            size = np.hypot(shift[:, 0], shift[:, 1])
+            scale = np.tanh(size / self.reach) / np.maximum(size / self.reach, 1e-12)
+            shift *= np.where(size > 0.0, scale, 1.0)[:, None]
         return shift
 
     def apply_lab(self, lab: F64) -> F64:

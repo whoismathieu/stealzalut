@@ -146,6 +146,7 @@ def look_analysis_dict(
     protect_vivid: float,
     focus: tuple[tuple[int, float], ...],
     gaps: dict[str, Any],
+    locality: float = 0.0,
 ) -> dict[str, Any]:
     """Content of ``analysis.json`` for the look method."""
     return {
@@ -161,6 +162,7 @@ def look_analysis_dict(
         "look": {
             "separation": separation,
             "protect_vivid": protect_vivid,
+            "locality": locality,
             "focus": {f"R{zone}": weight for zone, weight in focus},
             "gaps": gaps,
         },
@@ -198,6 +200,13 @@ Mesures (elles aident, mais ton œil prime : les deux photos n'ont pas le même 
 - `look.protect_vivid` (0 à 1 ; actuellement {protect_vivid:g}) : garde leur teinte
   aux néons, enseignes et couleurs vives de ma photo. Plus haut : ma photo garde
   ses propres couleurs vives. Plus bas : elles prennent celles de la référence.
+- `look.locality` (0 à 1 ; actuellement {locality:g}) : limite de combien chaque
+  couleur peut être déplacée. À 0, le rendu va jusqu'au bout vers la référence,
+  quitte à donner à mon sujet les couleurs du sujet de la référence (un ciel qui
+  prend la couleur d'une pelouse). Plus haut : ma photo garde ses propres
+  couleurs et sa luminosité, et ne prend de la référence que les écarts modérés.
+  À monter quand le rendu déforme mon sujet ; à baisser s'il reste trop loin de
+  la référence.
 - `look.focus` : poids des zones de la référence ({reference_ids}) dans ce que le
   logiciel y lit. 0 : zone ignorée (un cadre, un sujet sans rapport avec
   l'ambiance). 2 : zone privilégiée. Ne cite que les zones dont tu changes le poids.
@@ -252,6 +261,7 @@ def build_look_prompt(
     protect_vivid: float,
     focus: tuple[tuple[int, float], ...],
     gaps: dict[str, Any],
+    locality: float = 0.0,
 ) -> str:
     """``PROMPT.md`` of a look pack (measures and current settings filled in)."""
     ids = reference.ids
@@ -263,6 +273,7 @@ def build_look_prompt(
         gaps=gaps_table(gaps),
         separation=separation,
         protect_vivid=protect_vivid,
+        locality=locality,
         focus=focus_text,
         example=example,
     )
@@ -279,6 +290,7 @@ def write_look_pack(
     separation: float,
     protect_vivid: float,
     focus: tuple[tuple[int, float], ...] = (),
+    locality: float = 0.0,
 ) -> tuple[Path, str]:
     """Write ``<destination>/<name>_stealzalut_look_pack/`` and its ``.zip``.
 
@@ -293,6 +305,7 @@ def write_look_pack(
         separation: Current separation.
         protect_vivid: Current protection of vivid colours (the effective one).
         focus: Current weights of the reference's zones.
+        locality: Current locality.
 
     Returns:
         The pack folder (the zip sits next to it) and the prompt text.
@@ -301,9 +314,11 @@ def write_look_pack(
     folder.mkdir(parents=True, exist_ok=True)
 
     gaps = look_gaps(render_rgb, reference_rgb)
-    prompt = build_look_prompt(reference, analysis_id, separation, protect_vivid, focus, gaps)
+    prompt = build_look_prompt(
+        reference, analysis_id, separation, protect_vivid, focus, gaps, locality
+    )
     analysis = look_analysis_dict(
-        reference_rgb, reference, analysis_id, separation, protect_vivid, focus, gaps
+        reference_rgb, reference, analysis_id, separation, protect_vivid, focus, gaps, locality
     )
 
     _write_jpeg(folder / LOOK_PACK_FILES[0], create_thumbnail(source_rgb, ORIGINAL_MAX_SIZE))

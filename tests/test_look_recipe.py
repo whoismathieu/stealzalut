@@ -116,3 +116,25 @@ def test_v2_recipes_still_parse() -> None:
     assert len(recipe.links) == 8 and recipe.tau == 2.0
     assert recipe.grading["chroma_strength"] == 0.75
     assert recipe.separation is None and recipe.protect_vivid is None and recipe.focus == {}
+
+
+# ── Locality ─────────────────────────────────────────────────────────────────
+
+
+def test_look_recipe_carries_the_locality() -> None:
+    data = look_recipe_to_dict(GradingParams(), 1.0, None, (), None, locality=0.6)
+    assert data["look"] == {"separation": 1.0, "locality": 0.6}
+    assert parse_recipe(dump_recipe(data)).locality == 0.6
+
+
+def test_look_recipe_without_locality_leaves_it_alone() -> None:
+    recipe = parse_recipe(look_recipe_to_dict(GradingParams(), 1.0, None, (), None))
+    assert recipe.locality is None
+
+
+@pytest.mark.parametrize("value", [-0.1, 1.5, "fort"])
+def test_look_recipe_rejects_a_bad_locality(value: object) -> None:
+    data = look_recipe_to_dict(GradingParams(), 1.0, None, (), None)
+    data["look"]["locality"] = value
+    with pytest.raises(RecipeError, match=r"look\.locality"):
+        parse_recipe(data)

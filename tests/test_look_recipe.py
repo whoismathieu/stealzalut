@@ -19,7 +19,7 @@ from stealzalut.core.recipe import (
 )
 
 AI_ANSWER = (
-    Path(__file__).resolve().parents[1] / "docs/audit/data/ai_answer_tokyo_green_trimmed.txt"
+    Path(__file__).resolve().parent / "data/ai_answer_tokyo_green_trimmed.txt"
 )
 
 

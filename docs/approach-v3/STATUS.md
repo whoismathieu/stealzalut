@@ -1,5 +1,7 @@
 # Approche v3 — état d'avancement
 
+> Version courte et à jour : `CONTEXT.md` à la racine du dépôt. Lire celui-là d'abord.
+
 Branche : `approach-v3` (partie de `main` au commit `fd49d2c`). Rien n'est poussé.
 
 | Étape | Livrable | État |

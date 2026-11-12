@@ -58,20 +58,68 @@ Le gain sur un autre contenu est faible (on reste très au-dessus de 1) et le m�
 contenu est détruit. Une photo moyenne ne représente pas mieux le sujet de la référence
 que la source ne le fait.
 
+## Essai négatif : ne transférer que ce qui dépend peu du sujet
+
+Script : `prototypes/bench_invariants.py`. Ton et couleur notés séparément ; erreur
+moyenne rapportée à celle de ne rien faire, lot de réglage.
+
+| Option | Même contenu | Autre contenu |
+|---|---|---|
+| Ton : points noir et blanc seulement | 0,41 | 1,72 |
+| Ton : moitié de l'appariement | 0,51 | 1,44 |
+| Ton : appariement complet (actuel) | 0,02 | 2,55 |
+| Couleur : teinte de l'axe neutre par ton | 0,35 à 0,67 | 3,4 |
+| Couleur : dominante moyenne par ton | 0,26 | 2,71 |
+| Couleur : transport complet (actuel) | 0,10 | 3,00 |
+
+**Verdict : rejeté.** Sur un autre contenu, aucune option ne fait mieux que ne rien
+toucher. L'« axe neutre » (masse de couleur la plus dense à chaque ton) n'est pas un
+invariant : dans un paysage, c'est le ciel. Les étalonnages du banc déplacent la couleur
+de 0,018 en moyenne ; deux photos sans rapport diffèrent de 0,05 à 0,06.
+
+## Essai positif, partiel : transport local
+
+Script : `prototypes/bench_local.py`. Une couleur ne regarde que les couleurs de la
+référence situées à moins d'un rayon ρ (noyau gaussien en Oklab) : le déplacement est
+l'écart entre les centres locaux des deux densités, pondéré par la masse de référence
+présente à cet endroit, itéré trois fois. Ce qui n'a pas de correspondant proche n'est
+pas transporté. C'est l'idée du transport optimal relâché, appliquée localement.
+
+| `look` actuel et local | Même contenu : ton / couleur | Autre contenu : ton / couleur | Autre contenu : mieux que rien |
+|---|---|---|---|
+| actuel (réglage) | 0,02 / 0,10 | 2,55 / 3,00 | 13 % des cas |
+| ρ = 0,03 (réglage) | 0,85 / 0,50 | 1,01 / 1,32 | 43 % |
+| ρ = 0,03 (contrôle) | 0,84 / 0,46 | 1,01 / 1,23 | 45 % |
+| ρ = 0,06 (réglage) | 0,57 / 0,33 | 1,02 / 1,92 | 39 % |
+| ρ = 0,06 (contrôle) | 0,59 / 0,32 | 1,09 / 2,00 | 35 % |
+| ρ = 0,12 (réglage) | 0,31 / 0,31 | 1,35 / 2,41 | 26 % |
+
+**Lecture.** Les deux lots concordent. Sur un autre contenu, le dommage est divisé par
+deux à trois et la luminosité n'est presque plus abîmée ; mais on reste juste au-dessus
+de 1 en moyenne : moins nocif, pas encore utile. Le prix est payé sur le même contenu,
+surtout pour le ton : un étalonnage qui déplace les couleurs de plus que ρ sort du
+rayon. ρ est un curseur entre « respecter la photo » et « coller à la référence » ; le
+mode `look` actuel correspond à ρ infini.
+
+**Limites de l'essai.** Mesuré sur le modèle directement, sans passer par une LUT, sur
+2500 échantillons par image ; lent (plusieurs minutes par lot) ; la monotonie de la
+luminosité n'est pas garantie comme dans `look`. Ce n'est pas du code de production.
+
 ## Conséquences
 
-- **Ne pas recalibrer les constantes de `look` sur ce banc pour l'instant.** Le régime
-  « même contenu » est déjà bon ; le régime « autre contenu » ne dépend pas d'elles.
-- Le problème à résoudre est l'**identifiabilité** : à partir d'une seule image, rien
-  ne distingue l'étalonnage du sujet. Pistes à tester avec ce banc, par ordre de coût :
-  1. ne transférer que ce qui dépend peu du sujet : teinte des gris par tranche de
-     tons (presque toute scène contient des tons neutres), point noir et point blanc ;
-     laisser le reste à des curseurs ;
-  2. mesurer l'effet des dosages existants (intensité de luminance, mix) sur le résidu,
-     pour choisir de meilleurs réglages par défaut ;
-  3. un étalonnage paramétrique à peu de degrés de liberté, tiré vers l'identité.
-- Le détecteur de référence « monochrome » se déclenche sur 12 des 30 références
-  argentiques croisées : seuil à revoir.
+- **Ne pas recalibrer les constantes de `look` sur ce banc.** Le régime « même
+  contenu » est déjà bon ; le régime « autre contenu » ne dépend pas d'elles.
+- Le problème est l'**identifiabilité** : à partir d'une seule image, rien ne
+  distingue l'étalonnage du sujet. Trois essais mesurés : photo moyenne (rejeté),
+  invariants (rejeté), transport local (réduit le défaut sans le supprimer).
+- **Piste ouverte : un rayon de localité dans le mode `look`**, exposé comme réglage
+  (« respecter ma photo ↔ coller à la référence »). À décider avec Mathieu avant
+  d'intégrer : le gain n'est pas net et le comportement par défaut changerait.
+- Ce qu'aucun essai automatique ne fera : décider que « ce vert est de l'herbe, pas une
+  dominante ». C'est un jugement sur le contenu ; le pont IA (T07) est le seul endroit
+  du produit qui peut le porter.
+- Le détecteur de référence « monochrome » se déclenche sur 12 des 25 paires croisées
+  avec les références argentiques : seuil à revoir.
 
 ## Détail des mesures
 

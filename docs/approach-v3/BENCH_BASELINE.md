@@ -105,6 +105,64 @@ mode `look` actuel correspond à ρ infini.
 2500 échantillons par image ; lent (plusieurs minutes par lot) ; la monotonie de la
 luminosité n'est pas garantie comme dans `look`. Ce n'est pas du code de production.
 
+## Moteur `look` révisé (2026-11-12) : étirement linéaire et protection par teinte
+
+Deux changements dans `core/look.py`, mesurés avant / après sur les deux lots.
+
+1. **Étirement linéaire par bande** (`fit_stretch`). Le déplacement de chroma d'une bande
+   est décomposé en dominante + carte linéaire 2×2 autour de la couleur moyenne + résidu
+   sur le treillis. Un gain de saturation, un contraste de couleur ou une rotation de
+   teinte sont portés exactement, y compris pour une couleur absente de la source ; ils
+   ne passent plus par le flou du treillis ni par `FIELD_PRIOR`. Valeurs singulières de
+   `I + B` bornées à 0,5–2 ; `STRETCH_PRIOR = 0,005` réglé sur le lot de réglage (peu
+   sensible : 0,145 → 0,128 entre 0,01 et 0,0025 sur « sature »).
+2. **Protection des couleurs vives limitée aux autres teintes** (`protect_hue`,
+   `PROTECT_HUE_RANGE`). Avec une référence monochrome, la protection retenait 80 % du
+   déplacement de *toutes* les couleurs vives, donc aussi celles de la teinte de la
+   référence : c'était la première cause du résidu sur « sature » avec de vraies photos
+   (une photo de nuit est souvent monochrome). Elle n'agit plus qu'à plus de 15–45° de
+   la teinte dominante de la référence.
+
+| `look`, résidu moyen | Réglage avant | Réglage après | Contrôle avant | Contrôle après |
+|---|---|---|---|---|
+| Même contenu, tous étalonnages | 0,11 | **0,07** | 0,12 | **0,06** |
+| Même contenu, pire cas | 0,72 | 0,39 | 0,63 | 0,44 |
+| sature | 0,23 | 0,10 | 0,28 | 0,08 |
+| delave | 0,10 | 0,05 | 0,12 | 0,03 |
+| sarcelle-orange | 0,22 | 0,17 | 0,22 | 0,13 |
+| dominante-violette | 0,14 | 0,09 | 0,18 | 0,10 |
+| chaud-doux | 0,07 | 0,04 | 0,08 | 0,03 |
+| Autre contenu, moyen / médian | 4,12 / 2,41 | 4,13 / 2,41 | 6,26 / 3,56 | 6,28 / 3,60 |
+
+Part de chacun (8 photos du lot de réglage, même contenu) : protection seule 0,121 → 0,096 ;
+avec l'étirement 0,082. Le régime « autre contenu » ne bouge pas : ces deux changements
+ne traitent pas le sur-transfert du sujet.
+
+Après ces changements, `look` égale `oklab` sur « sature » (0,10 / 0,08 contre 0,10 /
+0,07). `zones` et `oklab`, même contenu : 0,17 / 0,20 en réglage, 0,13 / 0,18 en contrôle.
+
+Paires réelles source → argentique (25) : `look` se rapproche un peu des statistiques de
+la référence (écart de chroma 0,010 → 0,008 en nuit ; part de pixels colorés 0,137 →
+0,125 en paysage). `zones` : 0 repli sur 25 dans cette mesure (9 sur 25 lors de la
+mesure précédente, avant l'unification de `build_grid`). Cas d'acceptation B inchangé,
+dans ses tolérances.
+
+### Deux hypothèses mesurées et écartées (`IMG_6295.DNG`)
+
+**Taille de l'analyse (256 px).** Statistiques de la source à 256 px, 512 px, 1280 px et
+12 Mpx : chroma moyenne 0,0354 / 0,0358 / 0,0361 / 0,0363 ; pixels vifs 6,10 / 6,21 /
+6,25 / 6,28 %. Deux LUT ajustées sur 256 px et sur 512 px diffèrent de 0,0056 Oklab en
+moyenne sur la photo (environ 1,5 / 255). `ANALYSIS_MAX_SIZE` reste à 256. Ce qui change
+avec la taille est l'image, pas la LUT : la même LUT appliquée à 256 px puis à 12 Mpx
+donne 2,97 % puis 3,61 % de pixels vifs, parce qu'une vignette moyenne les néons fins.
+
+**Courbe de ton qui amplifierait un écart d'entrée.** Pente de la courbe sur les pixels de
+la photo : moyenne 0,82, maximum 1,63 (cas A). Une entrée plus sombre de 0,02 L sort plus
+sombre de 0,017 (× 0,84 ; × 0,97 sur le second cas) ; la couleur bouge de 0,002. La LUT
+transmet l'écart d'entrée, elle ne l'amplifie pas. Si l'hôte lui donne une image
+différente du JPEG, la sortie diffère d'autant : cela se règle à l'entrée (export
+intermédiaire), pas dans la courbe.
+
 ## Conséquences
 
 - **Ne pas recalibrer les constantes de `look` sur ce banc.** Le régime « même

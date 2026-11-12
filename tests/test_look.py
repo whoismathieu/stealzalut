@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
@@ -13,9 +15,11 @@ from stealzalut.core.look import (
     BANDS,
     MONOCHROME_VIVID_PROTECTION,
     SEPARATION_RANGE,
+    STRETCH_LIMITS,
     TONE_SAMPLES,
     LookTransferModel,
     fit_look,
+    fit_stretch,
     fit_tone_curve,
     lattice_position,
     look_diagnostics,
@@ -329,3 +333,118 @@ def test_labels_match_the_analysis_copy() -> None:
     weights = zone_weights(palette.labels, {palette.zones[-1].id: 0.0})
     model = fit_look(_neutral_street(), ref, reference_weights=weights)
     assert isinstance(model, LookTransferModel)
+
+
+# ── Linear chroma map (saturation, colour contrast) ──────────────────────────
+
+
+def _cloud(seed: int = 0, spread: float = 0.05) -> np.ndarray:
+    rng = np.random.default_rng(seed)
+    return np.asarray(rng.normal(0.0, spread, (2000, 2)) + np.array([0.02, -0.01]))
+
+
+def test_stretch_recovers_a_saturation_gain() -> None:
+    points = _cloud()
+    centre = points.mean(axis=0)
+    stretch, found = fit_stretch(points, 0.35 * (points - centre))
+    np.testing.assert_allclose(found, centre)
+    np.testing.assert_allclose(stretch, 0.35 * np.eye(2), atol=0.02)
+
+
+def test_stretch_recovers_a_hue_rotation() -> None:
+    points = _cloud(1)
+    angle = np.deg2rad(12.0)
+    rotation = np.array([[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]])
+    centred = points - points.mean(axis=0)
+    stretch, _ = fit_stretch(points, centred @ rotation.T - centred)
+    np.testing.assert_allclose(np.eye(2) + stretch, rotation, atol=0.02)
+
+
+def test_stretch_is_bounded() -> None:
+    points = _cloud(2)
+    centred = points - points.mean(axis=0)
+    for gain in (8.0, -0.95):
+        stretch, _ = fit_stretch(points, gain * centred)
+        singular = np.linalg.svd(np.eye(2) + stretch, compute_uv=False)
+        assert singular.max() <= STRETCH_LIMITS[1] + 1e-9
+        assert singular.min() >= STRETCH_LIMITS[0] - 1e-9
+
+
+def test_stretch_reads_nothing_from_a_grey_band() -> None:
+    points = _cloud(3, spread=0.001)
+    stretch, _ = fit_stretch(points, 3.0 * (points - points.mean(axis=0)))
+    assert np.abs(stretch).max() < 0.15  # asked for 3.0
+
+
+def test_model_carries_the_stretch(green_model: LookTransferModel) -> None:
+    assert green_model.stretch.shape == (BANDS, 2, 2)
+    assert green_model.pivot.shape == (BANDS, 2)
+
+
+def test_a_saturation_grade_is_recovered() -> None:
+    """Reference = the source with more chroma: every colour gains the same share."""
+    from stealzalut.devtools.ground_truth import as_picture
+
+    rng = np.random.default_rng(5)
+    lab = np.dstack([rng.uniform(0.15, 0.85, (96, 96)), rng.normal(0.0, 0.035, (96, 96, 2))])
+    graded = lab * np.array([1.0, 1.35, 1.35])
+    model = fit_look(as_picture(lab), as_picture(graded))
+    flat, truth = lab.reshape(-1, 3), graded.reshape(-1, 3)
+    out = model.apply_lab(flat)
+    error = np.hypot(*(out[:, 1:] - truth[:, 1:]).T).mean()
+    nothing = np.hypot(*(flat[:, 1:] - truth[:, 1:]).T).mean()
+    assert error < 0.15 * nothing
+    # A colour more vivid than any in the picture gains chroma too: the lattice
+    # alone left it behind
+    probe = np.array([[0.5, 0.12, 0.10]])
+    gain = np.hypot(*model.apply_lab(probe)[0, 1:]) / np.hypot(*probe[0, 1:])
+    assert 1.2 < gain < 1.5
+
+
+# ── Protection of vivid colours spares the reference's own hue ───────────────
+
+
+def test_monochrome_protection_remembers_the_reference_hue() -> None:
+    model = fit_look(_neutral_street(), _purple_night())
+    assert model.protect_hue is not None
+    assert abs((model.protect_hue - 298.0 + 180.0) % 360.0 - 180.0) < 15.0
+
+
+def test_protection_spares_vivid_colours_of_the_reference_hue() -> None:
+    """A vivid purple under a purple reference is the look itself: it must follow it."""
+    model = fit_look(_neutral_street(), _purple_night())
+    assert model.protect_hue is not None
+    free = replace(model, protect_vivid=0.0)
+    same_hue = oklch_to_oklab(np.array([[0.4, 0.16, model.protect_hue]]))
+    other_hue = oklch_to_oklab(np.array([[0.4, 0.16, model.protect_hue + 120.0]]))
+    np.testing.assert_allclose(model.chroma_shift(same_hue), free.chroma_shift(same_hue))
+    kept = np.hypot(*model.chroma_shift(other_hue)[0]) / np.hypot(*free.chroma_shift(other_hue)[0])
+    assert kept == pytest.approx(1.0 - MONOCHROME_VIVID_PROTECTION, abs=0.02)
+
+
+def test_protection_without_a_hue_covers_every_vivid_colour(
+    green_model: LookTransferModel,
+) -> None:
+    """A protection asked for by hand (recipe) on a varied reference protects all hues."""
+    protected = green_model.with_protect_vivid(0.5)
+    assert protected.protect_hue is None
+    for hue in (20.0, 140.0, 260.0):
+        lab = oklch_to_oklab(np.array([[0.4, 0.16, hue]]))
+        np.testing.assert_allclose(
+            protected.chroma_shift(lab), 0.5 * green_model.chroma_shift(lab), atol=1e-12
+        )
+
+
+def test_a_saturated_copy_of_a_monochrome_picture_is_recovered() -> None:
+    """The protection used to withhold exactly the colours such a grade moves most."""
+    from stealzalut.devtools.ground_truth import as_picture, bench_image
+
+    source = bench_image("night", _purple_night())
+    graded = source.lab * np.array([1.0, 1.25, 1.25])
+    model = fit_look(as_picture(source.lab), as_picture(graded))
+    assert model.protect_vivid > 0.0  # the reference is monochrome
+    out = model.apply_lab(source.flat)
+    truth = graded.reshape(-1, 3)
+    error = np.hypot(*(out[:, 1:] - truth[:, 1:]).T).mean()
+    nothing = np.hypot(*(source.flat[:, 1:] - truth[:, 1:]).T).mean()
+    assert error < 0.3 * nothing

@@ -101,7 +101,7 @@ faire ; 0 parfait, > 1 pire que rien) :
 
 | Méthode | Même contenu | Autre contenu |
 |---|---|---|
-| `look` | 0,11 | 4,1 à 6,3 |
+| `look` | 0,07 (0,11 avant l'étirement linéaire de chroma et la protection par teinte du 2026-11-12) | 4,1 à 6,3 |
 | `zones` | 0,13 à 0,17 | 4,3 à 5,9 |
 | `oklab` | 0,21 à 0,24 | 4,2 à 5,8 |
 

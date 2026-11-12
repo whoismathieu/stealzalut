@@ -14,6 +14,7 @@ Branche : `approach-v3` (partie de `main` au commit `fd49d2c`). Rien n'est pouss
 | D. Fidélité de l'entrée | T09 : profils couleur convertis en sRGB, bandeau pour les sources RAW, export de l'image gradée | **fait** (456 tests) ; l'accord avec Lightroom reste **à vérifier par Mathieu** |
 | D. Espace du `.cube` | T10 : sRGB, Display P3, Adobe RGB, ProPhoto, Rec.709 γ 2,4 | **fait** (502 tests) ; accord avec Lightroom et Resolve **à vérifier par Mathieu** |
 | D. Lecture des images | T10 ter : le moteur analyse les couleurs d'origine (Display P3, Adobe RGB, ProPhoto) sans écrêtage sRGB | **fait** (547 tests) |
+| D bis. Chaîne hors sRGB | T10 quater : `apply_lab` natif pour `oklab`, `zones`, `ambiance` ; un seul chemin dans `build_grid` ; la source entre dans la LUT dans son espace (aperçu, export d'image) ; pack IA sur couleurs non écrêtées | **fait** (627 tests) |
 | E. Calibrage | T11 : banc à vérité connue, en espace large, sur deux lots. Mesure de départ sur 25 photos dans `BENCH_BASELINE.md` | **mesuré** (565 tests). Constat : même contenu bon (`look` 0,11), autre contenu pire que rien pour les trois méthodes. Recalibrage **suspendu** : le défaut n'est pas dans les constantes. Trois essais mesurés (photo moyenne et invariants rejetés ; transport local : sur-transfert divisé par 2 à 3, sans passer sous 1). Intégration d'un rayon de localité : **décision de Mathieu** |
 | — | garder ou retirer « Ambiance », phase 2 (masques à la sortie) | **décision de Mathieu** |
 

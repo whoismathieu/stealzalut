@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from stealzalut.core.color_transfer import SUPPORTED_METHODS, fit_transfer
+from stealzalut.core.color_transfer import SUPPORTED_METHODS, TransferModel, fit_transfer
 from stealzalut.core.colorspace import oklab_to_oklch, srgb_to_oklab
 from stealzalut.core.grading import (
     GradingParams,
@@ -90,7 +90,7 @@ class TestBuildGrid:
         """Default adjustments keep the exported .cube identical to the raw transfer."""
         m = fit_transfer(_image((180, 100, 80), 40, 1), _image((70, 120, 200), 35, 2), method)
         result = build_grid(m, 17)
-        np.testing.assert_array_equal(result.grid, m.bake(17))
+        np.testing.assert_allclose(result.grid, m.bake(17), atol=1e-5)
         assert not result.auto_smoothed
 
     def test_zones_default_matches_raw_bake(self) -> None:
@@ -136,7 +136,7 @@ class TestBuildGrid:
         Regression: holding skin lightness while its neighbours darkened
         folded ~5 % of the grid.
         """
-        result = build_grid(_Scale(darkening), 33, params)  # type: ignore[arg-type]
+        result = build_grid(_Scale(darkening), 33, params)
         assert result.fold_fraction == 0.0
         assert not result.auto_smoothed
 
@@ -152,26 +152,22 @@ class TestBuildGrid:
             return delta
 
         monkeypatch.setattr(grading, "adjust_displacement", rippled)
-        raw = build_grid(_Scale(1.0), 33)  # type: ignore[arg-type]
-        dosed = build_grid(_Scale(1.0), 33, GradingParams(mix=0.9))  # type: ignore[arg-type]
+        raw = build_grid(_Scale(1.0), 33)
+        dosed = build_grid(_Scale(1.0), 33, GradingParams(mix=0.9))
         assert dosed.auto_smoothed
         assert dosed.smoothing_used >= grading.AUTO_SMOOTHING_START
         assert dosed.fold_fraction <= raw.fold_fraction + grading.MAX_EXTRA_FOLDS
 
 
-class _Scale:
+class _Scale(TransferModel):
     """Minimal monotonic transfer: multiplies every colour by *k*."""
-
-    method = "scale"
 
     def __init__(self, k: float) -> None:
         self.k = k
 
+    @property
+    def method(self) -> str:
+        return "scale"
+
     def apply(self, colors: np.ndarray) -> np.ndarray:
         return np.asarray(np.clip(colors * self.k, 0.0, 1.0))
-
-    def bake(self, size: int) -> np.ndarray:
-        return self.apply(generate_neutral_grid(size))
-
-    def fold_reference(self) -> _Scale:
-        return self

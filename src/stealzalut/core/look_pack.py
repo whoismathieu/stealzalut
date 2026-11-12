@@ -33,7 +33,7 @@ from stealzalut.core.ai_pack import (
     zone_sheet,
 )
 from stealzalut.core.colorspace import gamut_compress, oklab_to_srgb, srgb_to_oklab
-from stealzalut.core.palette import COLOURFUL_CHROMA, ZonePalette, colour_stats
+from stealzalut.core.palette import COLOURFUL_CHROMA, ZonePalette, analysis_oklab, colour_stats
 from stealzalut.core.recipe import RECIPE_FORMAT, RECIPE_VERSION
 from stealzalut.utils.image_io import create_thumbnail
 
@@ -61,10 +61,21 @@ TONE_RANGES: tuple[tuple[str, str, float, float], ...] = (
 MIN_RANGE_SHARE = 0.01
 
 
+def _unclipped_oklab(image_rgb: NDArray[np.uint8]) -> F64:
+    """Oklab pixels ``(N, 3)`` to measure: the picture's own colours when it carries them.
+
+    A wide-gamut picture is displayed as its sRGB rendition; measuring that
+    would understate exactly the vivid colours the gaps are about.
+    """
+    if getattr(image_rgb, "analysis_lab", None) is not None:
+        return analysis_oklab(image_rgb)[0]
+    small = create_thumbnail(image_rgb, GAPS_SIZE)
+    return srgb_to_oklab(small.reshape(-1, 3).astype(np.float64) / 255.0)
+
+
 def _measure(image_rgb: NDArray[np.uint8]) -> dict[str, Any]:
     """Tone and colour of one image: means, coloured share, mean colour per range."""
-    small = create_thumbnail(image_rgb, GAPS_SIZE)
-    lab = srgb_to_oklab(small.reshape(-1, 3).astype(np.float64) / 255.0)
+    lab = _unclipped_oklab(image_rgb)
     chroma = np.hypot(lab[:, 1], lab[:, 2])
     out: dict[str, Any] = {
         "lightness_mean": round(float(lab[:, 0].mean()), 3),

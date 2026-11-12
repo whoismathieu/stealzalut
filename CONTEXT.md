@@ -61,7 +61,8 @@ de repliement → finition → compression de gamut → `.cube`. Tout le calcul 
 | `core/recipe.py` | Recettes `.szl` v2 ; modes `zones`, `ambiance`, `look` |
 | `core/ai_pack.py`, `look_pack.py` | Packs pour l'IA de l'utilisateur (fichiers + presse-papiers) |
 | `core/lut_apply.py` | `apply_lut` (8 bits), `apply_lut_full`, `apply_lut_colors` (flottant) |
-| `utils/image_io.py` | `load_image_rgb` → `WideImage` : tableau sRGB 8 bits **pour l'affichage** + `analysis_lab` (couleurs d'origine non écrêtées, 256 px) **pour le moteur** |
+| `utils/image_io.py` | `load_image_rgb` → `WideImage` : tableau sRGB 8 bits **pour l'affichage** + `analysis_lab` (couleurs d'origine non écrêtées, 256 px) **pour le moteur** + `native`/`native_space` (pixels du fichier dans son espace) **pour appliquer la LUT** |
+| `core/lut_apply.py` | `source_pixels` + `render_lut` : la source entre dans la LUT dans son espace, la LUT s'applique dans l'espace du `.cube`, sRGB 8 bits seulement après. Tout `TransferModel` Oklab a un `apply_lab` natif ; `build_grid` a un seul chemin pour tous les espaces |
 | `gui/main_window.py` | Fenêtre (gros fichier : chercher les symboles par nom) ; `gui/history.py` : `EditState` (annulation) |
 | `devtools/ground_truth.py` | Banc de mesure à vérité connue (outil, pas utilisé par l'appli) |
 

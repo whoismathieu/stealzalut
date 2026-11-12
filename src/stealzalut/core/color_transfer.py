@@ -488,11 +488,14 @@ class OklabTransferModel(TransferModel):
         return "oklab"
 
     def apply(self, colors: NDArray[np.float64]) -> NDArray[np.float64]:
-        lab = srgb_to_oklab(colors)
+        return oklab_to_srgb(gamut_compress(self.apply_lab(srgb_to_oklab(colors))))
+
+    def apply_lab(self, lab: NDArray[np.float64]) -> NDArray[np.float64]:
+        # Affine in Oklab: valid for any colour, inside sRGB or not
         out = np.empty_like(lab)
         out[:, 0] = self.ref_mean[0] + self.lightness_scale * (lab[:, 0] - self.src_mean[0])
         out[:, 1:] = self.ref_mean[1:] + (lab[:, 1:] - self.src_mean[1:]) @ self.chroma_matrix.T
-        return oklab_to_srgb(gamut_compress(out))
+        return out
 
 
 # ── Reinhard constants ───────────────────────────────────────────────────────

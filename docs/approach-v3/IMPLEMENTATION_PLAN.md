@@ -375,6 +375,42 @@ identique à celui ajusté directement).
 
 ---
 
+## T10 quater — Le hors-sRGB traverse toute la chaîne · **fait**
+
+**Constat (revue de Mathieu).** Après T10 ter, le hors-sRGB était lu pour l'analyse mais
+encore perdu à quatre endroits.
+
+| Endroit | Défaut | Correction |
+|---|---|---|
+| `OklabTransferModel`, `AmbianceTransferModel` | pas d'`apply_lab` : repli sur le déplacement de la couleur sRGB la plus proche, sortie comprimée en sRGB | `apply_lab` natif en Oklab ; `apply` = `apply_lab` puis compression |
+| `ZoneTransferModel.displacement` | part globale calculée sur la couleur écrêtée puis soustraite à la couleur large | `global_model.apply_lab(lab) - lab` ; paramètre `srgb` supprimé ; idem `find_conflicts` |
+| `build_grid` | deux chemins : en sRGB le gamut était comprimé avant les réglages puis à la fin | un seul chemin pour tous les espaces, compression une fois, à la fin |
+| Aperçu et « Exporter l'image… » | la source entrait dans la LUT déjà écrêtée en sRGB 8 bits | `WideImage.native` (pixels du fichier dans son espace) ; `lut_apply.source_pixels` + `render_lut` : LUT appliquée dans l'espace du `.cube`, sRGB 8 bits fait après |
+| Pack IA (`look_pack._measure`) | écarts mesurés sur la vignette sRGB | couleurs non écrêtées quand l'image les porte ; le rendu émis par l'aperçu les porte |
+
+Le banc (`ground_truth.py`) travaillait déjà en Oklab non borné depuis T11.
+
+**Conséquences à connaître.**
+- L'aperçu applique la LUT dans l'espace choisi pour le `.cube` (changer l'espace relance
+  l'aperçu). Avec un `.cube` sRGB, une couleur P3 est écrêtée à l'entrée de la LUT : c'est
+  ce que fera l'hôte, l'aperçu le montre.
+- En sRGB, les grilles des modèles Oklab sans réglage sont inchangées. Celles de `zones`
+  changent là où le transfert global sort du sRGB (une seule compression au lieu de deux).
+- Les grilles sans réglage des méthodes RVB (`mkl`…) égalent `bake()` à 1e-6 près, plus au
+  bit près.
+
+**Mesuré sur `IMG_6295.DNG` × `ben-blennerhassett…jpg`, LUT 33.**
+
+| | Avant | Après |
+|---|---|---|
+| Nœuds hors sRGB d'un `.cube` P3 (53 % des nœuds) : écart Oklab moyen / max entre avant et après | | `oklab` 0,010 / 0,080 · `zones` 0,029 / 0,089 · `ambiance` 0,005 / 0,042 · `look` 0 |
+| Grille sRGB : écart max entre avant et après (sur 255) | | `oklab` 0 · `look` 0 · `ambiance` 0,1 · `zones` 59 (moyenne 4,2 ; sur la photo : moyenne 0,4, 99e centile 13) |
+| Pixels de la source hors sRGB (copie 1280 px) | écrêtés avant la LUT | 5,4 % entrent intacts |
+| Chroma moyenne de ces pixels après la LUT `look` | 0,1009 | 0,1012 (`.cube` sRGB) · 0,1110 (`.cube` P3) |
+| Aperçu : pixels modifiés d'au moins 2/255 | | 3,0 % (`.cube` sRGB) · 9,5 % (`.cube` P3), max 65 |
+
+Tests : `tests/test_wide_pipeline.py` (58).
+
 ## T11 — Banc de mesure à vérité connue · **outil fait, pas encore lancé sur de vraies photos**
 
 **Pourquoi.** Les constantes du mode `look` ont été réglées à l'œil sur huit paires

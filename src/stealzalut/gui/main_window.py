@@ -64,7 +64,7 @@ from stealzalut.core.look import (
     zone_weights,
 )
 from stealzalut.core.look_pack import write_look_pack
-from stealzalut.core.lut_apply import apply_lut_full
+from stealzalut.core.lut_apply import render_lut, source_pixels
 from stealzalut.core.lut_engine import VALID_LUT_SIZES
 from stealzalut.core.palette import (
     DEFAULT_ZONE_COUNT,
@@ -162,6 +162,7 @@ class MainWindow(QMainWindow):
         self._model_cache: tuple[Any, Any, str, TransferModel] | None = None
         self._pending_model_key: tuple[Any, Any, str] | None = None
         self._last_grid_result: GridResult | None = None
+        self._last_render: NDArray[np.uint8] | None = None
         # Zones method: raw fitted model shown in the editor (auto table)
         self._zone_model: ZoneTransferModel | None = None
         self._zone_count = DEFAULT_ZONE_COUNT
@@ -363,7 +364,7 @@ class MainWindow(QMainWindow):
             self._size_combo.setCurrentIndex(default_idx)
         controls_layout.addWidget(self._size_combo)
 
-        # Colour space the exported .cube is made for (the preview stays sRGB)
+        # Colour space the exported .cube is made for; the preview applies it there too
         space_label = QLabel("Espace du .cube :")
         space_label.setObjectName("controlLabel")
         controls_layout.addWidget(space_label)
@@ -375,8 +376,8 @@ class MainWindow(QMainWindow):
             "L'espace couleur dans lequel le .cube sera appliqué : le même que celui\n"
             "choisi dans ton logiciel (fenêtre de profil de Camera Raw / Lightroom,\n"
             "espace de la timeline dans Resolve).\n"
-            "L'aperçu reste en sRGB : un espace plus large garde des couleurs vives\n"
-            "que ton écran sRGB et cet aperçu ne montrent pas."
+            "L'aperçu applique la LUT dans cet espace, puis l'affiche en sRGB : un\n"
+            "espace plus large garde des couleurs vives que l'écran ne montre pas toutes."
         )
         space_label.setToolTip(space_tooltip)
         self._space_combo.setToolTip(space_tooltip)
@@ -572,6 +573,7 @@ class MainWindow(QMainWindow):
         # Algorithm or LUT size changed → the previewed grid changes too
         self._algo_combo.currentIndexChanged.connect(self._on_algo_changed)
         self._size_combo.currentIndexChanged.connect(self._on_size_changed)
+        self._space_combo.currentIndexChanged.connect(self._on_size_changed)
 
         # Slider moved (debounced by the panel) → rebuild the grid
         self._adjustments.params_changed.connect(self._on_params_changed)
@@ -727,8 +729,10 @@ class MainWindow(QMainWindow):
                 lut_size,
                 self._adjustments.params(),
                 self._history.current.finishing,
+                self._cube_space(),
             )
-            graded = apply_lut_full(source, result.grid, lut_size)
+            pixels, pixel_space = source_pixels(source)
+            graded = render_lut(pixels, pixel_space, result.grid, lut_size, self._cube_space())
             options = [cv2.IMWRITE_JPEG_QUALITY, 95] if target.suffix.lower() in _JPEG else []
             ok, data = cv2.imencode(
                 target.suffix.lower(), cv2.cvtColor(graded, cv2.COLOR_RGB2BGR), options
@@ -841,7 +845,7 @@ class MainWindow(QMainWindow):
     def _on_prepare_look_pack(self) -> None:
         """Write the look pack (with the current render) and copy its prompt."""
         source, reference = self._source_zone.image_rgb, self._reference_zone.image_rgb
-        render = self._preview.image_rgb
+        render = self._last_render if self._preview.image_rgb is not None else None
         cache = self._model_cache
         model = None if cache is None else self._effective_model(cache[3])
         palette = self._reference_zones()
@@ -1640,6 +1644,7 @@ class MainWindow(QMainWindow):
                 self._history.current.protect_vivid,
             ),
             reference_weights=self._reference_weights(),
+            space=self._cube_space(),
         )
         self._transfer_worker.progress.connect(self._on_transfer_progress)
         self._transfer_worker.model_ready.connect(self._on_model_ready)
@@ -1706,6 +1711,7 @@ class MainWindow(QMainWindow):
         self._progress_bar.setValue(pct)
 
     def _on_transfer_result(self, result: NDArray[np.uint8]) -> None:
+        self._last_render = result  # as emitted: may carry its unclipped colours
         self._preview.set_image(result)
         self._progress_bar.setValue(100)
         grid_result = self._last_grid_result

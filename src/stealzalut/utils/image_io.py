@@ -119,12 +119,17 @@ def _profile_description(img: Any) -> str:
 
 
 def _known_space(description: str) -> Any:
-    """The RGB space a profile description names, or ``None`` if not a known wide one."""
+    """The RGB space a profile description names, or ``None`` if not a known wide one.
+
+    Profiles of the same space go by many names ("Display P3", "DCI-P3 D65",
+    "AdobeRGB1998", "ROMM RGB"…): the match is a case-insensitive substring.
+    """
+    description = description.lower()
     from stealzalut.core.rgb_spaces import ADOBE_RGB, DISPLAY_P3, PROPHOTO_RGB
 
     if "p3" in description:
         return DISPLAY_P3
-    if "adobe rgb" in description or "adobergb" in description:
+    if "adobe" in description:
         return ADOBE_RGB
     if "prophoto" in description or "romm" in description:
         return PROPHOTO_RGB

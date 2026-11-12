@@ -34,10 +34,28 @@ def apply_lut(
     Raises:
         ValueError: If *grid* does not match *size*.
     """
+    out = apply_lut_colors(image_rgb.reshape(-1, 3).astype(np.float64) / 255.0, grid, size)
+    result = (np.clip(out, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
+    return cast("NDArray[np.uint8]", result.reshape(image_rgb.shape))
+
+
+def apply_lut_colors(
+    colors: NDArray[np.float64],
+    grid: NDArray[np.float64],
+    size: int,
+) -> NDArray[np.float64]:
+    """Apply a LUT grid to float colours ``(N, 3)`` in ``[0, 1]`` (trilinear).
+
+    The same interpolation as :func:`apply_lut`, without the 8-bit rounding:
+    for measurements, and for colours encoded in a space wider than sRGB.
+
+    Raises:
+        ValueError: If *grid* does not match *size*.
+    """
     validate_grid_shape(grid, size)
     lut = grid.reshape(size, size, size, 3)  # indexed [b, g, r]
 
-    coords = image_rgb.reshape(-1, 3).astype(np.float64) / 255.0 * (size - 1)
+    coords = np.clip(colors, 0.0, 1.0) * (size - 1)
     i0 = np.clip(np.floor(coords).astype(np.int64), 0, size - 2)
     frac = coords - i0
     r0, g0, b0 = i0[:, 0], i0[:, 1], i0[:, 2]
@@ -48,9 +66,7 @@ def apply_lut(
         for dg, wg in ((0, 1.0 - fg), (1, fg)):
             for dr, wr in ((0, 1.0 - fr), (1, fr)):
                 out += wb * wg * wr * lut[b0 + db, g0 + dg, r0 + dr]
-
-    result = (np.clip(out, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
-    return cast("NDArray[np.uint8]", result.reshape(image_rgb.shape))
+    return out
 
 
 #: Rows processed at once by :func:`apply_lut_full` (bounds memory use).

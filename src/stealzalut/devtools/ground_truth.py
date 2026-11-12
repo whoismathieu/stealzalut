@@ -20,6 +20,14 @@ The score is the **residual**: error of the method divided by the error of
 doing nothing.  0 = the grade is recovered, 1 = no better than leaving the
 source alone, above 1 = worse than doing nothing.
 
+Everything is measured in Oklab, in floating point, and nothing is clipped
+to sRGB: graded pictures are only brought into the Display P3 gamut, the
+method's LUT is baked for Display P3 and applied to float colours.
+
+The pictures are split in two lots, **tuning** and **control**, alternating
+within each category.  Constants are to be changed looking at the first
+lot only; the second says whether the change generalises.
+
 What this bench does **not** measure: taste.  A grade here is one global
 function of colour; it says nothing about what makes a look beautiful.
 
@@ -44,25 +52,70 @@ from numpy.typing import NDArray
 
 from stealzalut.core import look as look_module
 from stealzalut.core.color_transfer import SUPPORTED_METHODS, fit_transfer
-from stealzalut.core.colorspace import gamut_compress, oklab_to_srgb, srgb_to_oklab
+from stealzalut.core.colorspace import gamut_compress, oklab_to_srgb
 from stealzalut.core.finishing import eval_curve
 from stealzalut.core.grading import build_grid
-from stealzalut.core.lut_apply import apply_lut
-from stealzalut.utils.image_io import (
-    SUPPORTED_EXTENSIONS,
-    create_thumbnail,
-    load_image_rgb,
-)
+from stealzalut.core.lut_apply import apply_lut_colors
+from stealzalut.core.palette import analysis_oklab
+from stealzalut.core.rgb_spaces import DISPLAY_P3
+from stealzalut.utils.image_io import SUPPORTED_EXTENSIONS, WideImage, load_image_rgb
 
 F64 = NDArray[np.float64]
 U8 = NDArray[np.uint8]
 
-#: Longest edge of the pictures the bench works on.
-BENCH_SIZE = 384
 #: LUT resolution used to render (the preview's).
 BENCH_LUT = 33
+#: Space the bench works in: wide enough for graded colours, with real primaries.
+BENCH_SPACE = DISPLAY_P3
 #: Below this mean error of "doing nothing", a case has no grade to recover.
 MIN_GRADE_SIZE = 1e-3
+#: Names of the two lots.
+LOTS: tuple[str, str] = ("reglage", "controle")
+
+
+# ── Pictures ─────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class BenchImage:
+    """A picture as the engine analyses it.
+
+    Attributes:
+        name: File name.
+        category: Group used to balance the lots ("" if unknown).
+        lab: Oklab colours of the analysis copy, ``(h, w, 3)``, unclipped.
+    """
+
+    name: str
+    category: str
+    lab: F64
+
+    @property
+    def flat(self) -> F64:
+        """The colours as ``(h × w, 3)``."""
+        return self.lab.reshape(-1, 3)
+
+
+def bench_image(name: str, image_rgb: U8, category: str = "") -> BenchImage:
+    """A :class:`BenchImage` from a loaded picture (wide colours if it has them)."""
+    lab, h, w = analysis_oklab(image_rgb)
+    return BenchImage(name, category, lab.reshape(h, w, 3).copy())
+
+
+def as_picture(lab: F64) -> WideImage:
+    """Oklab colours ``(h, w, 3)`` as the picture the engine would be handed.
+
+    The array is the sRGB rendition (what a screen shows); the unclipped
+    colours ride along, as for a picture loaded from a wide-gamut file.
+    """
+    h, w = lab.shape[:2]
+    srgb = oklab_to_srgb(gamut_compress(lab.reshape(-1, 3)))
+    pixels: U8 = (srgb * 255.0 + 0.5).astype(np.uint8).reshape(h, w, 3)
+    return WideImage(pixels, lab, BENCH_SPACE.label)
+
+
+def _into_gamut(lab: F64) -> F64:
+    return gamut_compress(lab, to_linear=BENCH_SPACE.oklab_to_linear)
 
 
 # ── Known grades ─────────────────────────────────────────────────────────────
@@ -103,12 +156,9 @@ class Grade:
             out[:, 1:] += weight[:, None] * np.array(tint)[None, :]
         return out
 
-    def apply(self, image_rgb: U8) -> U8:
-        """The grade on an RGB uint8 picture, brought back into sRGB."""
-        lab = srgb_to_oklab(image_rgb.reshape(-1, 3).astype(np.float64) / 255.0)
-        rgb = oklab_to_srgb(gamut_compress(self.apply_lab(lab)))
-        graded: U8 = (rgb * 255.0 + 0.5).astype(np.uint8).reshape(image_rgb.shape)
-        return graded
+    def grade(self, lab: F64) -> F64:
+        """The grade on colours of any shape ``(..., 3)``, kept inside the bench's gamut."""
+        return _into_gamut(self.apply_lab(lab.reshape(-1, 3))).reshape(lab.shape)
 
 
 #: Grades of the bench: tone only, colour only, and both, mild to strong.
@@ -144,6 +194,7 @@ class Case:
     """One measurement.
 
     Attributes:
+        lot: "reglage" or "controle".
         method: Transfer method.
         grade: Name of the grade.
         source: Name of the source picture ``Q``.
@@ -156,6 +207,7 @@ class Case:
         residual: ``error / nothing``.
     """
 
+    lot: str
     method: str
     grade: str
     source: str
@@ -168,36 +220,39 @@ class Case:
     residual: float
 
 
-def _lab(image_rgb: U8) -> F64:
-    return srgb_to_oklab(image_rgb.reshape(-1, 3).astype(np.float64) / 255.0)
+def render(method: str, source: BenchImage, reference_lab: F64) -> F64:
+    """The method's LUT applied to the source: Oklab colours ``(h × w, 3)``.
 
-
-def render(method: str, source: U8, reference: U8) -> U8:
-    """What the application would show: the method's 33³ LUT applied to *source*."""
-    model = fit_transfer(source, reference, method=method)
-    return apply_lut(source, build_grid(model, BENCH_LUT).grid, BENCH_LUT)
+    The grid is baked for :data:`BENCH_SPACE` and applied to float colours,
+    so nothing is rounded to 8 bits or clipped to sRGB on the way.
+    """
+    model = fit_transfer(as_picture(source.lab), as_picture(reference_lab), method=method)
+    grid = build_grid(model, BENCH_LUT, None, None, BENCH_SPACE).grid
+    encoded = BENCH_SPACE.from_oklab(_into_gamut(source.flat))
+    return BENCH_SPACE.to_oklab(apply_lut_colors(encoded, grid, BENCH_LUT))
 
 
 def measure(
     method: str,
     grade: Grade,
-    source: tuple[str, U8],
-    reference: tuple[str, U8],
+    source: BenchImage,
+    reference: BenchImage,
+    lot: str = "",
 ) -> Case | None:
     """Run one case; ``None`` when the grade barely changes the source."""
-    truth = _lab(grade.apply(source[1]))
-    nothing = float(np.sqrt(((_lab(source[1]) - truth) ** 2).sum(axis=1)).mean())
+    truth = grade.grade(source.flat)
+    nothing = float(np.sqrt(((source.flat - truth) ** 2).sum(axis=1)).mean())
     if nothing < MIN_GRADE_SIZE:
         return None
-    output = _lab(render(method, source[1], grade.apply(reference[1])))
-    diff = output - truth
+    diff = render(method, source, grade.grade(reference.lab)) - truth
     error = float(np.sqrt((diff**2).sum(axis=1)).mean())
     return Case(
+        lot=lot,
         method=method,
         grade=grade.name,
-        source=source[0],
-        reference=reference[0],
-        same_content=source[0] == reference[0],
+        source=source.name,
+        reference=reference.name,
+        same_content=source is reference,
         error=error,
         error_lightness=float(np.abs(diff[:, 0]).mean()),
         error_chroma=float(np.hypot(diff[:, 1], diff[:, 2]).mean()),
@@ -219,19 +274,29 @@ def pairs(count: int, others: int) -> list[tuple[int, int]]:
     return result
 
 
+def split(images: Sequence[BenchImage]) -> tuple[list[BenchImage], list[BenchImage]]:
+    """Tuning and control lots: pictures alternate within each category, by name."""
+    lots: tuple[list[BenchImage], list[BenchImage]] = ([], [])
+    for category in sorted({image.category for image in images}):
+        members = sorted((i for i in images if i.category == category), key=lambda i: i.name)
+        for index, image in enumerate(members):
+            lots[index % 2].append(image)
+    return lots
+
+
 def evaluate(
-    images: Sequence[tuple[str, U8]],
+    images: Sequence[BenchImage],
     methods: Sequence[str] = ("look", "zones", "oklab"),
     grades: Sequence[Grade] = GRADES,
     others: int = 2,
+    lot: str = "",
 ) -> list[Case]:
-    """Measure every method on every grade and pair of *images*."""
-    small = [(name, create_thumbnail(image, BENCH_SIZE)) for name, image in images]
+    """Measure every method on every grade and pair of *images* (one lot)."""
     cases: list[Case] = []
-    for source_index, reference_index in pairs(len(small), others):
+    for source_index, reference_index in pairs(len(images), others):
         for grade in grades:
             for method in methods:
-                case = measure(method, grade, small[source_index], small[reference_index])
+                case = measure(method, grade, images[source_index], images[reference_index], lot)
                 if case is not None:
                     cases.append(case)
     return cases
@@ -269,28 +334,19 @@ def summarize(cases: Sequence[Case]) -> dict[str, dict[str, dict[str, float]]]:
 
 def by_grade(cases: Sequence[Case], same_content: bool) -> dict[str, dict[str, float]]:
     """Mean residual per grade and method, for one regime."""
-    table: dict[str, dict[str, float]] = {}
+    values: dict[str, dict[str, list[float]]] = {}
     for case in cases:
-        if case.same_content is not same_content:
-            continue
-        table.setdefault(case.grade, {}).setdefault(case.method, 0.0)
-    for grade, row in table.items():
-        for method in row:
-            values = [
-                c.residual
-                for c in cases
-                if c.grade == grade and c.method == method and c.same_content is same_content
-            ]
-            row[method] = float(np.mean(values))
-    return table
+        if case.same_content is same_content:
+            values.setdefault(case.grade, {}).setdefault(case.method, []).append(case.residual)
+    return {
+        grade: {method: float(np.mean(items)) for method, items in row.items()}
+        for grade, row in values.items()
+    }
 
 
 def report(cases: Sequence[Case]) -> str:
-    """Markdown report of *cases*."""
+    """Markdown report of *cases* (one lot)."""
     lines = [
-        "Résidu = erreur de la méthode / erreur de ne rien faire "
-        "(0 : étalonnage retrouvé ; 1 : inutile ; > 1 : pire que rien).",
-        "",
         "| Méthode | Régime | Résidu moyen | Médian | Pire | Erreur L | Erreur couleur | Cas |",
         "|---|---|---|---|---|---|---|---|",
     ]
@@ -344,17 +400,30 @@ def look_constants(**values: Any) -> Iterator[None]:
 # ── Command line ─────────────────────────────────────────────────────────────
 
 
-def load_folder(folder: Path) -> list[tuple[str, U8]]:
+def _categories(folder: Path) -> dict[str, str]:
+    """``{file name: category}`` from the folder's ``manifest.json``, if it has one."""
+    manifest = folder / "manifest.json"
+    if not manifest.exists():
+        return {}
+    try:
+        entries = json.loads(manifest.read_text(encoding="utf-8"))
+        return {str(e["file"]): str(e.get("category", "")) for e in entries}
+    except (OSError, ValueError, KeyError, TypeError):
+        return {}
+
+
+def load_folder(folder: Path) -> list[BenchImage]:
     """Every readable picture of *folder* (not recursive), sorted by name."""
-    images: list[tuple[str, U8]] = []
+    categories = _categories(folder)
+    images: list[BenchImage] = []
     for path in sorted(folder.iterdir()):
         if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
             continue
         try:
-            image = np.asarray(load_image_rgb(path))  # the bench grades sRGB pictures
+            picture = load_image_rgb(path)
         except (OSError, ValueError):
             continue
-        images.append((path.name, create_thumbnail(image, BENCH_SIZE)))
+        images.append(bench_image(path.name, picture, categories.get(path.name, "")))
     return images
 
 
@@ -371,6 +440,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("folder", type=Path, help="folder of pictures (not recursive)")
     parser.add_argument("--methods", default="look,zones,oklab", help="comma-separated")
     parser.add_argument("--others", type=int, default=2, help="other-content pairs per picture")
+    parser.add_argument("--lot", choices=(*LOTS, "tous"), default="tous",
+                        help="measure one lot only (tune on 'reglage', check on 'controle')")
     parser.add_argument("--set", action="append", default=[], metavar="NAME=VALUE",
                         help="override a constant of core/look.py for this run")
     parser.add_argument("--json", type=Path, help="also write every case to this file")
@@ -386,14 +457,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         overrides[name.strip()] = _parse_value(value.strip())
 
     images = load_folder(args.folder)
-    if len(images) < 2:
-        print(f"Il faut au moins 2 images lisibles dans {args.folder}.", file=sys.stderr)
+    if len(images) < 4:
+        print(f"Il faut au moins 4 images lisibles dans {args.folder}.", file=sys.stderr)
         return 2
-    with look_constants(**overrides):
-        cases = evaluate(images, methods, others=args.others)
-    print(f"{len(images)} images, {len(cases)} cas" + (f", {overrides}" if overrides else ""))
-    print()
-    print(report(cases))
+    print(f"{len(images)} images" + (f", constantes : {overrides}" if overrides else ""))
+    print(
+        "Résidu = erreur de la méthode / erreur de ne rien faire "
+        "(0 : étalonnage retrouvé ; 1 : inutile ; > 1 : pire que rien)."
+    )
+    cases: list[Case] = []
+    for name, members in zip(LOTS, split(images), strict=True):
+        if args.lot not in (name, "tous"):
+            continue
+        with look_constants(**overrides):
+            lot_cases = evaluate(members, methods, others=args.others, lot=name)
+        cases += lot_cases
+        print(f"\n## Lot « {name} » : {len(members)} images, {len(lot_cases)} cas\n")
+        print(report(lot_cases))
+        sys.stdout.flush()
     if args.json is not None:
         args.json.write_text(
             json.dumps([asdict(case) for case in cases], ensure_ascii=False, indent=1),

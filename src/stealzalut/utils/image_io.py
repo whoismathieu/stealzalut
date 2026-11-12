@@ -129,7 +129,7 @@ def _known_space(description: str) -> Any:
 
     if "p3" in description:
         return DISPLAY_P3
-    if "adobe" in description:
+    if any(name in description for name in ("adobe", "clayrgb", "oprgb")):
         return ADOBE_RGB
     if "prophoto" in description or "romm" in description:
         return PROPHOTO_RGB

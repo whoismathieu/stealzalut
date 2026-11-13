@@ -52,7 +52,7 @@ from PySide6.QtWidgets import (
 )
 
 from stealzalut.config import Settings
-from stealzalut.core.ai_pack import build_prompt, write_pack
+from stealzalut.core.ai_pack import build_prompt, write_pack, zone_measures
 from stealzalut.core.color_transfer import METHOD_LABELS, TransferModel
 from stealzalut.core.correspondence import CorrespondenceTable, Link
 from stealzalut.core.grading import GridResult, build_grid
@@ -842,18 +842,29 @@ class MainWindow(QMainWindow):
         )
         if not destination:
             return
+        # With a render on screen the pack shows it, so the AI corrects it
+        render = self._last_render if self._preview.image_rgb is not None else None
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
+            table = self._history.current.table or model.table
             folder = write_pack(
-                Path(destination), self._base_name(), source, reference, model, self._zone_count
+                Path(destination),
+                self._base_name(),
+                source,
+                reference,
+                model,
+                self._zone_count,
+                render,
+                table,
             )
+            measures = None if render is None else zone_measures(model, table, render)
         except OSError as exc:
             QMessageBox.critical(self, "Pack non créé", f"Impossible d'écrire le pack :\n{exc}")
             return
         finally:
             QApplication.restoreOverrideCursor()
 
-        QGuiApplication.clipboard().setText(build_prompt(model))
+        QGuiApplication.clipboard().setText(build_prompt(model, measures))
         self._status_bar.showMessage(f"Pack pour ton IA créé : {folder}")
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Information)
@@ -861,8 +872,9 @@ class MainWindow(QMainWindow):
         box.setText(f"Pack créé dans :\n{folder}\n(et une copie .zip à côté)")
         box.setInformativeText(
             "1. Ouvre ton IA (Claude, ChatGPT, Gemini…).\n"
-            "2. Joins les 6 images et analysis.json (ou le .zip) : les deux premières sont\n"
-            "   tes photos telles quelles, pour que l'IA juge leur vraie ambiance.\n"
+            "2. Joins les images et analysis.json (ou le .zip) : les deux premières sont\n"
+            "   tes photos telles quelles, et 7_current_render.jpg est ton rendu actuel,\n"
+            "   pour que l'IA corrige ce que tu vois.\n"
             "3. Colle le prompt : il est déjà dans ton presse-papiers (copie dans PROMPT.md).\n"
             "4. Copie toute sa réponse, puis ici : Importer › Coller la réponse de l'IA."
         )

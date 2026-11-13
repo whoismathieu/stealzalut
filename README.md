@@ -29,7 +29,7 @@ To avoid the "monochrome filter" effect and the crushed highlights typical of gl
   - *Cast per tone band*: the mean displacement of `(a, b)` on 12 lightness bands.
   - *2×2 linear stretch (`stretch`)* and a *residual field on a companded lattice* (49×49, with `p = ab / (‖ab‖ + 0.05)`, which gives the finest resolution near the neutral axis), both computed by sliced optimal transport (48 projections).
   - *Dedicated controls*: **Séparation** (0 to 1.5); **Fidélité à ma photo**, the locality (0 to 1), a soft `tanh` limit that reduces the transfer of the reference's subject when source and reference show unrelated scenes; and **weighting by reference zone** (`Référence ▾`: ignore a frame, favour a sky).
-- **Zones (`zones`)**: deterministic k-means segmentation in Oklab (K from 2 to 16, default 8), automatic matching by entropic optimal transport (Sinkhorn), and an interactive **correspondence table** editor (weighted links, per-zone locks, qualitative intents, detection of Bhattacharyya conflicts).
+- **Zones (`zones`)**: deterministic k-means segmentation in Oklab (K from 2 to 16, default 8), automatic matching by entropic optimal transport (Sinkhorn), and an interactive **correspondence table** editor (weighted links, per-zone locks, detection of Bhattacharyya conflicts). Each zone also has its own **retouch sliders**, applied on top of its transfer and never attenuated by the global adjustments: **Garder ma lumière** (the zone keeps the lightness it has in your photo, for a skin or a subject that came out too dark), **Exposition**, **Saturation**, **Température** and **Teinte**.
 - **Ambiance (`ambiance`)**: for nearly monochrome references (hue concentration of 0.85 or more). Extracts a continuous tint curve along `L` and adds it to the source colours, while protecting vivid colours at 80 %.
 - **Decoupled Oklab (`oklab`)**: linear Gaussian optimal transport, with a separate scale for lightness `L` and a 2×2 Monge–Kantorovich matrix on `(a, b)`.
 - **Classic global methods (`color-matcher`)**: `mkl`, `reinhard`, `hm`, `mvgd`, `hm-mkl-hm`, `hm-mvgd-hm`, `default`.
@@ -48,7 +48,7 @@ To avoid the "monochrome filter" effect and the crushed highlights typical of gl
 
 ### Offline AI bridge and `.szl` recipes (v2)
 
-- **No API, no network.** The application writes an analysis folder (`_stealzalut_look_pack` or `_stealzalut_pack`, plus a `.zip` archive) containing the photographs, the **current render** (`3_current_render.jpg` in Rendu mode), the zone plates, the measured gaps (`analysis.json`), and copies a ready-made prompt to the clipboard.
+- **No API, no network.** The application writes an analysis folder (`_stealzalut_look_pack` or `_stealzalut_pack`, plus a `.zip` archive) containing the photographs, the **current render** (`3_current_render.jpg` in Rendu mode), the zone plates, the measured gaps (`analysis.json`), and copies a ready-made prompt to the clipboard. In Zones mode the pack also holds the current render (`7_current_render.jpg`) and, per zone, its lightness and chroma in the source, in the render and in its target, so the AI corrects what you see.
 - **Tolerant import.** Paste the full answer of your AI assistant (Claude, ChatGPT, Gemini): StealZaLut extracts and validates the last `.szl` JSON block, merges the finishing, and detects over-cautious strengths (« Doser à 100 % »).
 
 ---

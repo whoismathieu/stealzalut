@@ -2,7 +2,7 @@
 
 One format, three uses: the answer of the user's own AI, a save of the
 user's work, and sharing.  A recipe only holds zone ids, weights,
-qualitative levels and explanations — never colour values.
+qualitative levels, slider positions and explanations — never colour values.
 
 Reading is tolerant where it costs nothing (free text around the JSON,
 words or numbers for strengths, ``"S3"`` or ``3`` for ids) and strict
@@ -18,7 +18,16 @@ import re
 from dataclasses import dataclass, field, fields, replace
 from typing import Any
 
-from stealzalut.core.correspondence import LEVELS, CorrespondenceTable, Intent, Level, Link, Origin
+from stealzalut.core.correspondence import (
+    LEVELS,
+    RETOUCH_RANGE,
+    CorrespondenceTable,
+    Intent,
+    Level,
+    Link,
+    Origin,
+    Retouch,
+)
 from stealzalut.core.finishing import (
     BAND_WIDTH,
     Finishing,
@@ -50,6 +59,7 @@ SEPARATION_WORDS: dict[str, float] = {"sharp": 0.5, "medium": 1.0, "soft": 2.0}
 SEPARATION_RANGE = (0.25, 3.0)
 
 _INTENT_FIELDS = tuple(f.name for f in fields(Intent))
+_RETOUCH_FIELDS = tuple(f.name for f in fields(Retouch))
 _GRADING_FIELDS = tuple(f.name for f in fields(GradingParams))
 _FINISHING_FIELDS = tuple(f.name for f in fields(Finishing))
 _GRADING_RANGES = {name: (0.0, 3.0 if name == "smoothing" else 1.0) for name in _GRADING_FIELDS}
@@ -75,6 +85,8 @@ class RecipeLink:
     intent: Intent | None = None
     rationale: str = ""
     origin: Origin | None = None
+    keep_tone: float | None = None
+    retouch: Retouch | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -367,6 +379,25 @@ def _parse_link(raw: Any, index: int) -> RecipeLink:
         levels = {k: _level(v, f"{where}, intent.{k}") for k, v in raw_intent.items()}
         intent = Intent(**levels)
 
+    retouch: Retouch | None = None
+    if raw.get("retouch") is not None:
+        raw_retouch = raw["retouch"]
+        if not isinstance(raw_retouch, dict):
+            raise RecipeError(f"{where} : « retouch » doit être un objet {{ … }}.")
+        unknown = set(raw_retouch) - set(_RETOUCH_FIELDS)
+        if unknown:
+            allowed = ", ".join(_RETOUCH_FIELDS)
+            raise RecipeError(
+                f"{where} : retouche inconnue « {sorted(unknown)[0]} » (possibles : {allowed})."
+            )
+        retouch = Retouch(
+            **{
+                k: _number(v, f"{where}, retouch.{k}", *RETOUCH_RANGE)
+                for k, v in raw_retouch.items()
+                if v is not None
+            }
+        )
+
     origin = raw.get("origin")
     return RecipeLink(
         source_zone=zone,
@@ -378,6 +409,8 @@ def _parse_link(raw: Any, index: int) -> RecipeLink:
         intent=intent,
         rationale=str(raw.get("rationale") or ""),
         origin=origin if origin in _ORIGINS else None,
+        keep_tone=_optional_number(raw, "keep_tone", where),
+        retouch=retouch,
     )
 
 
@@ -494,6 +527,8 @@ def apply_recipe(
                 intent=item.intent or Intent(),
                 origin=item.origin or origin,
                 rationale=item.rationale,
+                keep_tone=item.keep_tone or 0.0,
+                retouch=item.retouch or Retouch(),
             )
         )
     return table
@@ -559,7 +594,7 @@ def full_dose(
     Every unlocked link that transfers something gets ``strength = 1`` and
     the default colour strength; global colour strength and mix go to 1 and
     the neutral protection to 0.  Links switched off (strength 0), locked
-    zones, targets, intents and the other settings are kept.
+    zones, targets, intents, retouches and the other settings are kept.
     """
     for link in table.links:
         if not link.locked and link.strength > 0.0:
@@ -607,6 +642,13 @@ def recipe_to_dict(
         }
         if intent:
             item["intent"] = intent
+        if link.keep_tone > 0.0:
+            item["keep_tone"] = link.keep_tone
+        retouch = {
+            k: getattr(link.retouch, k) for k in _RETOUCH_FIELDS if getattr(link.retouch, k) != 0.0
+        }
+        if retouch:
+            item["retouch"] = retouch
         if link.rationale:
             item["rationale"] = link.rationale
         item["origin"] = link.origin

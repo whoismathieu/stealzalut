@@ -10,7 +10,11 @@ it needs, in a folder (plus a ``.zip`` of it):
   the zone in colour, the rest greyed, labelled ``S1``… / ``R1``…;
 * ``5_source_overview.png`` / ``6_reference_overview.png`` — whole image,
   zone outlines and labels;
-* ``analysis.json`` — exact measurements and the automatic matching;
+* ``7_current_render.jpg`` — the source with the current settings, when a
+  render exists, so the AI corrects what is on screen instead of guessing;
+* ``analysis.json`` — exact measurements, the automatic matching and, per
+  source zone, its lightness and chroma in the source, in the current render
+  and in its target;
 * ``PROMPT.md`` — the prompt to paste, asking for a ``.szl`` recipe.
 
 The app never calls any AI service: no key, no network.
@@ -28,9 +32,10 @@ import numpy as np
 from numpy.typing import NDArray
 
 from stealzalut.core.colorspace import oklab_to_oklch
-from stealzalut.core.palette import ColourStats, ZonePalette, upsample_mask
+from stealzalut.core.correspondence import CorrespondenceTable, Link
+from stealzalut.core.palette import ColourStats, ZonePalette, analysis_oklab, upsample_mask
 from stealzalut.core.recipe import RECIPE_FORMAT, RECIPE_VERSION
-from stealzalut.core.zone_transfer import ZoneTransferModel
+from stealzalut.core.zone_transfer import ZoneTransferModel, _target_moments
 from stealzalut.utils.image_io import create_thumbnail
 
 ANALYSIS_FORMAT = "stealzalut.analysis"
@@ -57,6 +62,8 @@ PACK_FILES = (
     "analysis.json",
     "PROMPT.md",
 )
+#: The source with the current settings (written only when a render exists).
+RENDER_FILE = "7_current_render.jpg"
 
 
 # ── analysis.json ────────────────────────────────────────────────────────────
@@ -105,11 +112,102 @@ def suggested_mode(model: ZoneTransferModel) -> str:
     return "ambiance" if stats is not None and stats.is_monochrome else "zones"
 
 
+def _tone_and_chroma(lab: NDArray[np.float64]) -> dict[str, float]:
+    return {"L": round(float(lab[0]), 3), "C": round(float(np.hypot(lab[1], lab[2])), 3)}
+
+
+def _link_settings(link: Link) -> dict[str, Any]:
+    """What the link currently sets beyond its targets (defaults left out)."""
+    settings: dict[str, Any] = {}
+    if link.locked:
+        settings["keep"] = True
+    if link.strength != 1.0:
+        settings["strength"] = round(link.strength, 2)
+    if link.luminance_strength:
+        settings["luminance_strength"] = round(link.luminance_strength, 2)
+    if link.keep_tone > 0.0:
+        settings["keep_tone"] = round(link.keep_tone, 2)
+    retouch = {
+        name: round(getattr(link.retouch, name), 2)
+        for name in ("exposure", "saturation", "warmth", "tint")
+        if getattr(link.retouch, name) != 0.0
+    }
+    if retouch:
+        settings["retouch"] = retouch
+    return settings
+
+
+def zone_measures(
+    model: ZoneTransferModel,
+    table: CorrespondenceTable,
+    render_rgb: NDArray[np.uint8],
+) -> list[dict[str, Any]]:
+    """Each source zone in the source, in the current render and in its target.
+
+    Args:
+        model: The zones model of the pair.
+        table: The table the render was made with.
+        render_rgb: The current render of the source, RGB uint8.
+
+    Returns:
+        One entry per source zone: ``zone``, ``source`` / ``render`` /
+        ``target`` as ``{"L", "C"}`` (mean lightness and chroma of the mean
+        colour, Oklab; ``target`` is ``None`` for a zone without target),
+        the current ``targets`` and ``settings`` of its link.
+    """
+    lab, height, width = analysis_oklab(render_rgb)
+    labels: NDArray[Any] = model.source.labels
+    if labels.shape != (height, width):
+        labels = cv2.resize(
+            labels.astype(np.uint8), (width, height), interpolation=cv2.INTER_NEAREST
+        )
+    flat = labels.reshape(-1)
+    measures = []
+    for zone in model.source.zones:
+        pixels = lab[flat == zone.id]
+        link = table.link(zone.id)
+        target = _target_moments(model.reference, link.targets)[0] if link.targets else None
+        measures.append(
+            {
+                "zone": zone.id,
+                "source": _tone_and_chroma(zone.mean),
+                "render": _tone_and_chroma(pixels.mean(axis=0) if len(pixels) else zone.mean),
+                "target": None if target is None else _tone_and_chroma(target),
+                "targets": {str(k): round(w, 3) for k, w in sorted(link.targets.items())},
+                "settings": _link_settings(link),
+            }
+        )
+    return measures
+
+
+def measures_table(measures: list[dict[str, Any]]) -> str:
+    """The zone measures as a Markdown table for the prompt."""
+
+    def cell(entry: dict[str, float] | None, key: str) -> str:
+        return "—" if entry is None else f"{entry[key]:.2f}"
+
+    rows = [
+        "| Zone | L source | L rendu | L cible | C source | C rendu | C cible | Réglages actuels |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+    for item in measures:
+        settings = json.dumps(item["settings"], ensure_ascii=False) if item["settings"] else ""
+        rows.append(
+            f"| S{item['zone']} "
+            f"| {cell(item['source'], 'L')} | {cell(item['render'], 'L')} "
+            f"| {cell(item['target'], 'L')} "
+            f"| {cell(item['source'], 'C')} | {cell(item['render'], 'C')} "
+            f"| {cell(item['target'], 'C')} | {settings} |"
+        )
+    return "\n".join(rows)
+
+
 def analysis_dict(
     model: ZoneTransferModel,
     source_size: tuple[int, int],
     reference_size: tuple[int, int],
     zone_count: int,
+    measures: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Content of ``analysis.json``.
 
@@ -118,7 +216,21 @@ def analysis_dict(
         source_size: ``(width, height)`` of the source image.
         reference_size: ``(width, height)`` of the reference image.
         zone_count: Zone count requested for the analysis.
+        measures: :func:`zone_measures` of the current render, if there is one.
     """
+    current = {} if measures is None else {"current_render": {"zones": measures}}
+    return {
+        **_analysis_base(model, source_size, reference_size, zone_count),
+        **current,
+    }
+
+
+def _analysis_base(
+    model: ZoneTransferModel,
+    source_size: tuple[int, int],
+    reference_size: tuple[int, int],
+    zone_count: int,
+) -> dict[str, Any]:
     return {
         "format": ANALYSIS_FORMAT,
         "version": ANALYSIS_VERSION,
@@ -301,7 +413,7 @@ Mon logiciel a découpé chaque image en zones de couleur. Fichiers joints :
 - 5_source_overview.png et 6_reference_overview.png : les images entières
   assombries, zones entourées et étiquetées (pour situer chaque zone).
 - analysis.json : mesures exactes et proposition automatique (auto_matching).
-
+{render_file}
 ## Ta mission
 1. Décris brièvement ce que représente chaque zone (ex. « S3 : feuillage en contre-jour »).
 2. Pour chaque zone source, choisis quelle(s) zone(s) de la référence doivent lui
@@ -359,6 +471,25 @@ le look disparaît presque. Donc :
 - Dans "finishing", ne donne QUE "saturation" et "vibrance" (les roues et la
   courbe restent à l'utilisateur). Mets "finishing": null si rien n'est à compenser.
 
+## Retoucher une zone précise (luminosité, couleur)
+Chaque entrée de "links" peut aussi porter une retouche, qui s'ajoute au
+transfert de la zone et n'est PAS atténuée par les réglages globaux :
+- "keep_tone" (0 à 1) : part de sa luminosité d'origine que la zone garde.
+  0 = elle s'assombrit ou s'éclaircit avec le reste de l'image ; 1 = elle garde
+  la luminosité qu'elle a dans la source. C'est le réglage à utiliser quand un
+  visage, une peau (notamment foncée) ou un sujet est devenu trop sombre ou trop
+  clair alors que le reste de l'image est bon : sa couleur suit toujours la cible.
+- "retouch" : nombres de -1.0 à 1.0, 0 = neutre.
+  "exposure" éclaircit (+) ou assombrit (-) la zone, surtout dans ses tons
+  sombres et moyens (jusqu'à environ 0.2 de luminosité à ±1) ;
+  "saturation" (+ plus saturé), "warmth" (+ plus chaud), "tint" (+ magenta,
+  - vert). Ordres de grandeur : 0.2 = léger, 0.5 = net, 1.0 = maximum.
+- "luminance_strength" (0 à 1) dans une entrée : la zone prend la luminosité de
+  sa cible au lieu de suivre l'image. À réserver aux cas où c'est voulu : cela
+  peut créer des cassures entre zones voisines.
+Une LUT ne voit que des couleurs, pas des objets : retoucher une zone agit sur
+toutes les parties de l'image qui ont ces couleurs.
+{render_section}
 ## Règles
 - N'invente AUCUNE valeur de couleur (pas de RGB, hex, lift, gamma…).
 - Utilise uniquement les identifiants présents dans analysis.json :
@@ -379,6 +510,9 @@ le look disparaît presque. Donc :
               "zone_separation": "sharp|medium|soft", "mix": 1.0 }},
   "links": [ {{ "source_zone": 1, "targets": {{ "2": 0.7, "4": 0.3 }},
                "strength": "full", "intent": {{ "warmth": "+small" }},
+               "rationale": "..." }},
+             {{ "source_zone": 3, "targets": {{ "1": 1.0 }}, "keep_tone": 0.8,
+               "retouch": {{ "exposure": 0.3, "saturation": 0.0, "warmth": 0.0, "tint": 0.0 }},
                "rationale": "..." }},
              {{ "source_zone": 2, "keep": true, "rationale": "..." }} ],
   "finishing": {{ "saturation": 0.0, "vibrance": 0.0 }} }}
@@ -406,9 +540,41 @@ def _mode_note(model: ZoneTransferModel) -> str:
     )
 
 
-def build_prompt(model: ZoneTransferModel) -> str:
-    """``PROMPT.md`` for this analysis (ids and analysis id filled in)."""
+_RENDER_FILE_NOTE = f"""\
+- {RENDER_FILE} : ma photo avec les réglages ACTUELS. C'est ce rendu que tu
+  corriges : compare-le à la référence et à la source avant de proposer quoi
+  que ce soit.
+"""
+
+_RENDER_SECTION = """
+## Rendu actuel : ce que donnent les réglages en cours
+Luminosité (L : 0 = noir, 1 = blanc) et quantité de couleur (C) de chaque zone
+source, dans la source, dans le rendu actuel et dans sa cible de la référence :
+
+{table}
+
+Comment lire : « L rendu » nettement sous « L source » = la zone s'est
+assombrie. Si c'est un sujet qui doit rester lisible (visage, peau), remonte-la
+avec "keep_tone", puis "retouch.exposure" si cela ne suffit pas. « C rendu »
+loin de « C cible » = la zone n'a pas pris la couleur attendue : vérifie sa
+cible et sa force avant de toucher à la saturation. Repars des réglages
+actuels (dernière colonne) et ne change que ce qui doit l'être.
+"""
+
+
+def build_prompt(model: ZoneTransferModel, measures: list[dict[str, Any]] | None = None) -> str:
+    """``PROMPT.md`` for this analysis (ids and analysis id filled in).
+
+    Args:
+        model: The zones model of the pair.
+        measures: :func:`zone_measures` of the current render; with them the
+            prompt shows the render and asks the AI to correct it.
+    """
     return _PROMPT.format(
+        render_file="" if measures is None else _RENDER_FILE_NOTE,
+        render_section=(
+            "" if measures is None else _RENDER_SECTION.format(table=measures_table(measures))
+        ),
         source_ids=_ids("S", model.source),
         reference_ids=_ids("R", model.reference),
         recipe_format=RECIPE_FORMAT,
@@ -456,6 +622,8 @@ def write_pack(
     reference_rgb: NDArray[np.uint8],
     model: ZoneTransferModel,
     zone_count: int,
+    render_rgb: NDArray[np.uint8] | None = None,
+    table: CorrespondenceTable | None = None,
 ) -> Path:
     """Write the pack folder ``<destination>/<name>_stealzalut_pack/`` and its ``.zip``.
 
@@ -466,6 +634,8 @@ def write_pack(
         reference_rgb: Reference image, RGB uint8.
         model: Freshly fitted zones model (automatic table).
         zone_count: Zone count requested for the analysis.
+        render_rgb: The current render of the source, RGB uint8, if there is one.
+        table: The table the render was made with (default: the model's).
 
     Returns:
         The pack folder (the zip sits next to it, same name + ``.zip``).
@@ -484,16 +654,24 @@ def write_pack(
     _write_png(folder / PACK_FILES[4], zone_overview(source_rgb, model.source, "S"))
     _write_png(folder / PACK_FILES[5], zone_overview(reference_rgb, model.reference, "R"))
 
+    measures = None
+    if render_rgb is None:
+        (folder / RENDER_FILE).unlink(missing_ok=True)
+    else:
+        measures = zone_measures(model, table or model.table, render_rgb)
+        _write_jpeg(folder / RENDER_FILE, create_thumbnail(render_rgb, ORIGINAL_MAX_SIZE))
+
     analysis = analysis_dict(
         model,
         (int(source_rgb.shape[1]), int(source_rgb.shape[0])),
         (int(reference_rgb.shape[1]), int(reference_rgb.shape[0])),
         zone_count,
+        measures,
     )
     (folder / PACK_FILES[6]).write_text(
         json.dumps(analysis, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
-    (folder / PACK_FILES[7]).write_text(build_prompt(model), encoding="utf-8")
+    (folder / PACK_FILES[7]).write_text(build_prompt(model, measures), encoding="utf-8")
 
     shutil.make_archive(str(folder), "zip", root_dir=folder)
     return folder

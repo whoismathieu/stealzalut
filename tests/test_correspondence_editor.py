@@ -7,6 +7,7 @@ import json
 import sys
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,7 @@ from stealzalut.core.correspondence import (
     CorrespondenceTable,
     Intent,
     Link,
+    Retouch,
     link_without_target,
     remove_target,
     retarget,
@@ -366,9 +368,30 @@ class TestZoneInspector:
         link, key = emitted[-1]
         assert link.strength == pytest.approx(0.4) and link.origin == "user"
         assert key == "strength:1"
-        inspector._intent_sliders["warmth"].setValue(2)
-        assert emitted[-1][0].intent == Intent(warmth="+medium")
-        assert emitted[-1][0].strength == pytest.approx(0.4)  # earlier edit kept
+        inspector._retouch_sliders["warmth"].setValue(50)
+        link, key = emitted[-1]
+        assert link.retouch == Retouch(warmth=0.5) and key == "retouch_warmth:1"
+        assert link.strength == pytest.approx(0.4)  # earlier edit kept
+        inspector._keep_tone.setValue(80)
+        link, key = emitted[-1]
+        assert link.keep_tone == pytest.approx(0.8) and key == "keep_tone:1"
+        assert link.retouch == Retouch(warmth=0.5)
+
+    def test_levels_of_an_older_recipe_show_on_the_sliders(
+        self,
+        qapp: QApplication,
+        palettes: tuple[ZonePalette, ZonePalette, CorrespondenceTable],
+    ) -> None:
+        """A recipe written with levels still reads on the sliders; moving one
+        replaces the level it stands for and leaves the others alone."""
+        old = replace(palettes[2].link(1), intent=Intent(lightness="+large", warmth="-small"))
+        inspector, emitted = self._inspector(palettes, old)
+        assert inspector._retouch_sliders["exposure"].value() == 46  # 0.10 of 0.217
+        assert inspector._retouch_sliders["warmth"].value() == -12  # 0.010 of 0.08
+        inspector._retouch_sliders["exposure"].setValue(70)
+        link = emitted[-1][0]
+        assert link.retouch == Retouch(exposure=0.7)
+        assert link.intent == Intent(warmth="-small")
 
     def test_target_weights(
         self,

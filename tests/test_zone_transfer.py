@@ -45,7 +45,7 @@ def _zone_lab(model: ZoneTransferModel, zone_id: int) -> np.ndarray:
 
 
 def _apply_lab(model: ZoneTransferModel, lab: np.ndarray) -> np.ndarray:
-    return lab + model.displacement(lab)
+    return model.apply_lab(lab)
 
 
 class TestCorrespondenceTable:
@@ -107,8 +107,8 @@ class TestZoneTransfer:
     def test_lightness_follows_global_by_default(self, model: ZoneTransferModel) -> None:
         lab = srgb_to_oklab(generate_neutral_grid(17))
         zones_dl = model.displacement(lab)[:, 0]
-        global_dl = srgb_to_oklab(model.global_model.apply(generate_neutral_grid(17)))[:, 0]
-        np.testing.assert_allclose(zones_dl, global_dl - lab[:, 0], atol=1e-5)
+        global_dl = model.global_model.apply_lab(lab)[:, 0] - lab[:, 0]
+        np.testing.assert_allclose(zones_dl, global_dl, atol=1e-5)
 
     def test_strength_doses_colour_not_tone(self, model: ZoneTransferModel) -> None:
         """Regression: a strength < 1 also shrank the shared global lightness,
@@ -119,7 +119,7 @@ class TestZoneTransfer:
         dosed = model.with_table(table)
         grid = generate_neutral_grid(17)
         lab = srgb_to_oklab(grid)
-        global_dl = srgb_to_oklab(model.global_model.apply(grid))[:, 0] - lab[:, 0]
+        global_dl = model.global_model.apply_lab(lab)[:, 0] - lab[:, 0]
         np.testing.assert_allclose(dosed.displacement(lab)[:, 0], global_dl, atol=1e-5)
 
         # Strength 0: the zone keeps its colours but its tone follows the image

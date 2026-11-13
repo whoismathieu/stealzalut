@@ -25,7 +25,8 @@ class Intent:
 
     The app turns levels into numbers (see
     :data:`stealzalut.core.zone_transfer.INTENT_STEPS`); nobody ever has to
-    type a colour value.
+    type a colour value.  Levels are the older, coarser form of
+    :class:`Retouch`: recipes may still use them, the editor writes a retouch.
     """
 
     lightness: Level = "0"
@@ -36,6 +37,31 @@ class Intent:
     @property
     def is_neutral(self) -> bool:
         return self == Intent()
+
+
+@dataclass(frozen=True, slots=True)
+class Retouch:
+    """Manual retouch of a zone, applied on top of its transfer.
+
+    Every value is a slider position in ``[-1, 1]`` (0 = nothing); the
+    engine turns it into a move (see
+    :func:`stealzalut.core.zone_transfer.zone_retouch`).  Unlike the
+    transfer, a retouch is not dosed by the global adjustments: what the
+    user sets by hand on a zone is what the zone gets.
+    """
+
+    exposure: float = 0.0  # + lighter, - darker
+    saturation: float = 0.0
+    warmth: float = 0.0  # + warmer (yellow/orange), - cooler
+    tint: float = 0.0  # + magenta, - green
+
+    @property
+    def is_neutral(self) -> bool:
+        return self == Retouch()
+
+
+#: Range of every :class:`Retouch` value.
+RETOUCH_RANGE: tuple[float, float] = (-1.0, 1.0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +83,10 @@ class Link:
         intent: Qualitative nudges.
         origin: Who set this link.
         rationale: Free-text explanation (shown as a tooltip).
+        keep_tone: How much the zone keeps its own lightness instead of
+            following the image's tone mapping (0 = follows it, 1 = keeps
+            the lightness it has in the source).
+        retouch: Continuous manual retouch (exposure, saturation, warmth, tint).
     """
 
     source_zone: int
@@ -68,6 +98,8 @@ class Link:
     intent: Intent = Intent()
     origin: Origin = "auto"
     rationale: str = ""
+    keep_tone: float = 0.0
+    retouch: Retouch = Retouch()
 
     def __hash__(self) -> int:  # dict field: hash on identity-stable fields only
         return hash((self.source_zone, tuple(sorted(self.targets.items())), self.strength))
@@ -82,7 +114,16 @@ class Link:
     def keeps_colours(self) -> bool:
         """True when the zone keeps its colours (only its tone may change)."""
         return self.locked or (
-            (not self.targets or self.strength == 0.0) and self.intent.is_neutral
+            (not self.targets or self.strength == 0.0)
+            and self.intent.is_neutral
+            and self.retouch.is_neutral
+        )
+
+    @property
+    def is_retouched(self) -> bool:
+        """True when the zone carries a manual retouch (a locked zone never does)."""
+        return not self.locked and (
+            self.keep_tone > 0.0 or not self.retouch.is_neutral or not self.intent.is_neutral
         )
 
 

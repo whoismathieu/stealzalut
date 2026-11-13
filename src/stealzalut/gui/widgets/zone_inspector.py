@@ -1,7 +1,7 @@
 """Inspector of the selected source zone.
 
 Shows and edits one :class:`~stealzalut.core.correspondence.Link`: lock,
-strengths, qualitative intents, target weights.  Every edit is emitted as
+strengths of the transfer, manual retouch, target weights.  Every edit is emitted as
 a new link (with a *merge key* so that dragging a slider forms a single
 undo step); the window puts it in the table and calls :meth:`set_zone`
 back with the result.
@@ -25,16 +25,16 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from stealzalut.core.correspondence import Link, link_without_target, set_target_weight
-from stealzalut.core.palette import Zone, ZonePalette
-from stealzalut.gui.zone_text import (
-    INTENT_KINDS,
-    ORIGIN_WORDS,
-    describe_level,
-    level_from_step,
-    pct,
-    step_from_level,
+from stealzalut.core.correspondence import (
+    RETOUCH_RANGE,
+    Level,
+    Link,
+    link_without_target,
+    set_target_weight,
 )
+from stealzalut.core.palette import Zone, ZonePalette
+from stealzalut.core.zone_transfer import retouch_from_intent
+from stealzalut.gui.zone_text import ORIGIN_WORDS, RETOUCH_KINDS, pct, signed_pct
 
 _STRENGTHS: tuple[tuple[str, str, str], ...] = (
     ("strength", "Force", "Quantité de transfert pour cette zone (0 = inchangée)."),
@@ -48,6 +48,13 @@ _STRENGTHS: tuple[tuple[str, str, str], ...] = (
     ),
 )
 _STRENGTH_DEFAULTS = {"strength": 1.0, "chroma_strength": 1.0, "luminance_strength": 0.0}
+_KEEP_TONE_TOOLTIP = (
+    "0 = la zone s'assombrit ou s'éclaircit avec le reste de l'image.\n"
+    "100 = la zone garde la luminosité qu'elle a dans ta photo.\n"
+    "Utile pour une peau ou un sujet devenu trop sombre ; sa couleur suit toujours la cible."
+)
+#: Slider units for a retouch of 1.
+_RETOUCH_STEPS = 100
 
 
 def _swatch(hex_color: str, size: int = 16) -> QLabel:
@@ -131,25 +138,44 @@ class ZoneInspector(QWidget):
             self._strength_values[field] = value
             row += 1
 
-        self._intent_sliders: dict[str, QSlider] = {}
-        self._intent_values: dict[str, QLabel] = {}
-        for kind, label, up, down in INTENT_KINDS:
+        retouch_title = QLabel("Retouche de la zone")
+        retouch_title.setObjectName("inspectorSection")
+        retouch_title.setToolTip(
+            "Ces réglages s'ajoutent au transfert et ne sont pas atténués par les\n"
+            "réglages globaux (intensités, protections, mix)."
+        )
+        grid.addWidget(retouch_title, row, 0, 1, 3)
+        row += 1
+
+        def add_row(name: str, label: str, tooltip: str, low: int, high: int) -> QSlider:
+            nonlocal row
             slider = QSlider(Qt.Orientation.Horizontal)
-            slider.setObjectName(f"intent_{kind}")
-            slider.setRange(-3, 3)
-            slider.setPageStep(1)
-            slider.setTickPosition(QSlider.TickPosition.TicksBelow)
-            slider.setTickInterval(1)
-            slider.setToolTip(f"Vers la gauche : {down.lower()} · vers la droite : {up.lower()}")
-            slider.valueChanged.connect(lambda v, k=kind: self._on_intent(k, v))
+            slider.setObjectName(name)
+            slider.setRange(low, high)
+            slider.setToolTip(tooltip)
             value = QLabel()
-            value.setMinimumWidth(130)
-            grid.addWidget(QLabel(label), row, 0)
+            value.setMinimumWidth(42)
+            value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            title = QLabel(label)
+            title.setToolTip(tooltip)
+            grid.addWidget(title, row, 0)
             grid.addWidget(slider, row, 1)
             grid.addWidget(value, row, 2)
-            self._intent_sliders[kind] = slider
-            self._intent_values[kind] = value
+            self._retouch_values[name] = value
             row += 1
+            return slider
+
+        self._retouch_values: dict[str, QLabel] = {}
+        self._keep_tone = add_row(
+            "inspector_keep_tone", "Garder ma lumière", _KEEP_TONE_TOOLTIP, 0, 100
+        )
+        self._keep_tone.valueChanged.connect(self._on_keep_tone)
+        self._retouch_sliders: dict[str, QSlider] = {}
+        low, high = (round(bound * _RETOUCH_STEPS) for bound in RETOUCH_RANGE)
+        for field, _intent, label, _up, _down, tooltip in RETOUCH_KINDS:
+            slider = add_row(f"retouch_{field}", label, tooltip, low, high)
+            slider.valueChanged.connect(lambda v, f=field: self._on_retouch(f, v))
+            self._retouch_sliders[field] = slider
         grid.setColumnStretch(1, 1)
         body.addLayout(grid)
 
@@ -229,7 +255,8 @@ class ZoneInspector(QWidget):
         widgets: list[QWidget] = [
             self._lock,
             *self._strength_sliders.values(),
-            *self._intent_sliders.values(),
+            self._keep_tone,
+            *self._retouch_sliders.values(),
             *(row[0] for row in self._target_rows.values()),
         ]
         for w in widgets:
@@ -248,11 +275,14 @@ class ZoneInspector(QWidget):
             self._strength_sliders["luminance_strength"].setEnabled(
                 not link.locked and bool(link.targets)
             )
-            for kind, slider in self._intent_sliders.items():
-                level = getattr(link.intent, kind)
-                slider.setValue(step_from_level(level))
+            self._keep_tone.setValue(round(link.keep_tone * 100))
+            self._keep_tone.setEnabled(not link.locked)
+            self._retouch_values["inspector_keep_tone"].setText(pct(link.keep_tone))
+            for field, slider in self._retouch_sliders.items():
+                value = self._retouch_value(link, field)
+                slider.setValue(round(value * _RETOUCH_STEPS))
                 slider.setEnabled(not link.locked)
-                self._intent_values[kind].setText(describe_level(kind, level))
+                self._retouch_values[f"retouch_{field}"].setText(signed_pct(value))
             for ref_id, (slider, value, remove) in self._target_rows.items():
                 weight = link.targets.get(ref_id, 0.0)
                 slider.setValue(round(weight * 100))
@@ -328,15 +358,39 @@ class ZoneInspector(QWidget):
             new = replace(self._link, luminance_strength=fraction, origin="user")
         self._emit(new, f"{field}:{self._link.source_zone}")
 
-    def _on_intent(self, kind: str, step: int) -> None:
+    @staticmethod
+    def _retouch_value(link: Link, field: str) -> float:
+        """Slider position of *field*: the retouch plus what a level of an
+        older recipe amounts to."""
+        low, high = RETOUCH_RANGE
+        legacy = getattr(retouch_from_intent(link.intent), field)
+        return float(min(max(getattr(link.retouch, field) + legacy, low), high))
+
+    def _on_keep_tone(self, value: int) -> None:
         if self._link is None:
             return
-        level = level_from_step(step)
-        self._intent_values[kind].setText(describe_level(kind, level))
-        intent = replace(self._link.intent, **{kind: level})
+        self._retouch_values["inspector_keep_tone"].setText(f"{value} %")
         self._emit(
-            replace(self._link, intent=intent, origin="user"),
-            f"intent_{kind}:{self._link.source_zone}",
+            replace(self._link, keep_tone=value / 100.0, origin="user"),
+            f"keep_tone:{self._link.source_zone}",
+        )
+
+    def _on_retouch(self, field: str, value: int) -> None:
+        if self._link is None:
+            return
+        fraction = value / _RETOUCH_STEPS
+        self._retouch_values[f"retouch_{field}"].setText(signed_pct(fraction))
+        # The slider now says everything: the level it replaces is dropped
+        intent_field = next(k[1] for k in RETOUCH_KINDS if k[0] == field)
+        neutral: Level = "0"
+        self._emit(
+            replace(
+                self._link,
+                retouch=replace(self._link.retouch, **{field: fraction}),
+                intent=replace(self._link.intent, **{intent_field: neutral}),
+                origin="user",
+            ),
+            f"retouch_{field}:{self._link.source_zone}",
         )
 
     def _on_weight(self, ref_id: int, value: int) -> None:

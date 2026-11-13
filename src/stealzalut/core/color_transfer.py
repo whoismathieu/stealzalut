@@ -377,6 +377,25 @@ class TransferModel(ABC):
         moved = srgb_to_oklab(self.apply(oklab_to_srgb(inside)))
         return lab + (moved - inside)
 
+    def transfer_lab(self, lab: NDArray[np.float64]) -> NDArray[np.float64]:
+        """:meth:`apply_lab` without the manual retouch of :meth:`retouch_lab`.
+
+        The global adjustments (strengths, protections, mix, smoothing) dose
+        this part only.
+        """
+        return self.apply_lab(lab)
+
+    def retouch_lab(
+        self, lab_in: NDArray[np.float64], lab_now: NDArray[np.float64]
+    ) -> NDArray[np.float64] | None:
+        """Manual retouch to add to *lab_now*, the adjusted transfer of *lab_in*.
+
+        ``None`` (the default) when the model has none.  What the user sets
+        by hand is applied after the global adjustments and is not dosed by
+        them.
+        """
+        return None
+
     def fold_reference(self) -> TransferModel:
         """Model whose own folds are accepted as-is when regularising a grid.
 

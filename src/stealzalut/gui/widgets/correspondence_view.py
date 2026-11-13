@@ -280,7 +280,7 @@ class CorrespondenceView(QWidget):
                 hovered=self._hover == (SOURCE, zone.id),
                 conflict=zone.id in self._conflict_zones,
                 locked=link.locked,
-                marked=not link.intent.is_neutral or link.strength < 1.0,
+                marked=link.is_retouched or link.strength < 1.0,
             )
         for zone in self._reference.zones:
             self._draw_swatch(

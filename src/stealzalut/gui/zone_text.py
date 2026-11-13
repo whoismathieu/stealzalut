@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from stealzalut.core.correspondence import LEVELS, Intent, Level, Link, Origin
+from stealzalut.core.correspondence import LEVELS, Intent, Level, Link, Origin, Retouch
 from stealzalut.core.finishing import BANDS
 from stealzalut.core.palette import Zone
 
@@ -12,6 +12,43 @@ INTENT_KINDS: tuple[tuple[str, str, str, str], ...] = (
     ("saturation", "Saturation", "Plus saturé", "Moins saturé"),
     ("warmth", "Température", "Plus chaud", "Plus froid"),
     ("tint", "Teinte", "Plus magenta", "Plus vert"),
+)
+
+#: (Retouch field, Intent field it replaces, label, wording for "+", wording for "-", tooltip)
+RETOUCH_KINDS: tuple[tuple[str, str, str, str, str, str], ...] = (
+    (
+        "exposure",
+        "lightness",
+        "Exposition",
+        "Plus clair",
+        "Plus sombre",
+        "Éclaircit ou assombrit cette zone, surtout dans ses tons sombres et moyens.\n"
+        "Le noir et le blanc ne bougent pas.",
+    ),
+    (
+        "saturation",
+        "saturation",
+        "Saturation",
+        "Plus saturé",
+        "Moins saturé",
+        "Couleurs de cette zone plus vives ou plus ternes.",
+    ),
+    (
+        "warmth",
+        "warmth",
+        "Température",
+        "Plus chaud",
+        "Plus froid",
+        "Vers la droite : plus chaud (jaune orangé). Vers la gauche : plus froid.",
+    ),
+    (
+        "tint",
+        "tint",
+        "Teinte",
+        "Plus magenta",
+        "Plus vert",
+        "Vers la droite : plus magenta. Vers la gauche : plus vert.",
+    ),
 )
 
 _LEVEL_WORDS = {"small": "léger", "medium": "moyen", "large": "fort"}
@@ -49,6 +86,24 @@ def describe_intent(intent: Intent) -> str:
     return ", ".join(parts)
 
 
+def signed_pct(fraction: float) -> str:
+    """``"+35 %"``, ``"-20 %"`` or ``"0 %"``."""
+    value = round(fraction * 100)
+    return f"{value:+d} %" if value else "0 %"
+
+
+def describe_retouch(retouch: Retouch, keep_tone: float = 0.0) -> str:
+    """``"exposition +35 %, garde sa lumière à 80 %"``, or ``""`` when there is none."""
+    parts = [
+        f"{label.lower()} {signed_pct(getattr(retouch, field))}"
+        for field, _intent, label, *_ in RETOUCH_KINDS
+        if round(getattr(retouch, field) * 100)
+    ]
+    if round(keep_tone * 100):
+        parts.append(f"garde sa lumière à {pct(keep_tone)}")
+    return ", ".join(parts)
+
+
 def pct(fraction: float) -> str:
     return f"{round(fraction * 100)} %"
 
@@ -73,6 +128,9 @@ def source_tooltip(zone: Zone, link: Link) -> str:
     intent = describe_intent(link.intent)
     if intent:
         lines.append(f"Intentions : {intent}")
+    retouch = describe_retouch(link.retouch, link.keep_tone)
+    if retouch:
+        lines.append(f"Retouche : {retouch}")
     if link.rationale:
         lines.append(f"Note : {link.rationale}")
     lines.append("")

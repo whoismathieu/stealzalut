@@ -11,14 +11,21 @@ dose it:
   balance).
 * **Skin protection** — cancel ``Δab`` on skin-tone inputs.  Lightness is
   deliberately left alone: holding skin lightness while neighbouring colours
-  darken creates folds (brighter input → darker output).
+  darken creates folds (brighter input → darker output).  Measured again on
+  real pairs: 1.6 to 5 % of the grid folded on 3 pairs out of 8, even after
+  the strongest automatic smoothing.  A skin that came out too dark is lifted
+  per zone instead (``keep_tone`` and ``exposure`` of the zones method).
 * **Mix** — global amount of the whole grade.
 * **Smoothing** — Gaussian smoothing of the displacement over the grid.
 
 Because ``ΔL`` is only ever scaled by a constant, these adjustments cannot
 fold a monotonic transfer.  Folds are still measured and, if adjustments
-ever add some (per-zone transfers will), the displacement is smoothed
+ever add some (per-zone transfers can), the displacement is smoothed
 automatically (see :mod:`stealzalut.core.regularize`).
+
+A model may also carry a **manual retouch** (per-zone sliders of the zones
+method).  It is added after all of the above and is not dosed by them: what
+the user sets by hand on a zone is what the zone gets.
 
 All of this works for every transfer method, and the result is still a
 single standard ``.cube`` grid.
@@ -45,15 +52,19 @@ MAX_EXTRA_FOLDS = 0.005
 #: Smoothing used for the first automatic attempt when the user set none.
 AUTO_SMOOTHING_START = 0.5
 AUTO_SMOOTHING_STEPS = 3
+#: Smoothing of a manual retouch (same unit as the smoothing slider): enough
+#: to avoid steps between zones, never raised automatically.
+RETOUCH_SMOOTHING = 0.5
 
 # Skin-tone window in Oklch (calibrated on light to dark skin samples:
-# h ≈ 37°–59°, C ≈ 0.06–0.10, L ≈ 0.38–0.89).  Full weight inside the inner
-# bounds, fading to zero at the outer bounds.
+# h ≈ 37°–59°, C ≈ 0.06–0.10, L ≈ 0.38–0.89, then widened towards dark and
+# less saturated tones for dark brown and black skin).  Full weight inside
+# the inner bounds, fading to zero at the outer bounds.
 SKIN_HUE_CENTER = 57.5
 SKIN_HUE_FULL = 20.0  # half-width with full weight (37.5°–77.5°)
 SKIN_HUE_FADE = 30.0  # half-width where the weight reaches 0 (27.5°–87.5°)
-SKIN_CHROMA = (0.015, 0.035, 0.15, 0.20)  # fade-in start/end, fade-out start/end
-SKIN_LIGHTNESS = (0.25, 0.35, 0.92, 0.98)
+SKIN_CHROMA = (0.010, 0.025, 0.16, 0.22)  # fade-in start/end, fade-out start/end
+SKIN_LIGHTNESS = (0.12, 0.22, 0.92, 0.98)
 
 # Near-neutral window: full protection below C = 0.02, none above C = 0.06.
 NEUTRAL_CHROMA = (0.02, 0.06)
@@ -183,7 +194,7 @@ def build_grid(
     # One sequence for every space: the model moves Oklab colours, the
     # adjustments and the fold control act on that displacement, and the
     # gamut of *space* is enforced once, at the very end.
-    lab_raw = model.apply_lab(lab_in)
+    lab_raw = model.transfer_lab(lab_in)
     baseline = model.fold_reference()
     reference_l = lab_raw[:, 0] if baseline is model else baseline.apply_lab(lab_in)[:, 0]
     raw_folds = fold_fraction(reference_l, size)
@@ -200,6 +211,14 @@ def build_grid(
             break
         smoothing = max(smoothing * 2.0, AUTO_SMOOTHING_START)
         auto = True
+
+    # The manual retouch comes after the adjustments and the fold control:
+    # neither doses it, and the folds it may add are the user's choice.
+    retouch = model.retouch_lab(lab_in, lab_out)
+    if retouch is not None:
+        sigma = _sigma_cells(max(params.smoothing, RETOUCH_SMOOTHING), size)
+        lab_out = lab_out + smooth_field(retouch, size, sigma)
+        folds = fold_fraction(lab_out[:, 0], size)
 
     if finishing is not None and not finishing.is_identity:
         lab_out = apply_finishing(lab_out, finishing)

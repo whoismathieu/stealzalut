@@ -45,8 +45,8 @@ src/stealzalut/
 │   ├── look.py                 # Default "look" engine (monotone tone curve + per-band chroma transport)
 │   ├── palette.py              # Deterministic Oklab k-means (256 px), ColourStats, analysis_id
 │   ├── matching.py             # Entropic optimal matching (Sinkhorn) between ZonePalettes
-│   ├── correspondence.py       # Immutable CorrespondenceTable, Link, Intent, pure edit operations
-│   ├── zone_transfer.py        # "zones" engine, soft Mahalanobis blend, Bhattacharyya conflicts
+│   ├── correspondence.py       # Immutable CorrespondenceTable, Link, Retouch, Intent, pure edit operations
+│   ├── zone_transfer.py        # "zones" engine, soft Mahalanobis blend, per-zone retouch, Bhattacharyya conflicts
 │   ├── ambiance.py             # "ambiance" engine (tint curve along L for monochrome references)
 │   ├── grading.py              # GradingParams, masks (neutrals/skin/vivid), unified build_grid
 │   ├── regularize.py           # Separable 3D Gaussian blur (smooth_field), fold measure (fold_fraction)
@@ -73,7 +73,7 @@ src/stealzalut/
 │   └── paths.py                # Path resolution compatible with PyInstaller (sys._MEIPASS)
 └── devtools/
     ├── ground_truth.py         # Known-truth bench in Display P3 (not imported by the application)
-    └── smoke_gui.py            # Captures the real window in "look" mode on one pair (visual check)
+    └── smoke_gui.py            # Captures the real window on one pair, in "look" or "zones" mode (visual check)
 ```
 
 ---
@@ -107,17 +107,18 @@ For a size `N` in {17, 33, 64} and a target `space: RGBSpace`, there is one sequ
    - `ΔL` and `Δab` are scaled separately (`luminance_strength`, `chroma_strength`).
    - `Δab` only is attenuated (never `ΔL`, to avoid folds) by three `smoothstep` masks evaluated in Oklch on the input:
      - `neutral_mask` protects greys (C from 0.02 to 0.06);
-     - `skin_mask` is a window on hue 27.5°–87.5° (centre 57.5°, full weight on 37.5°–77.5°), C from 0.015 to 0.20, L from 0.25 to 0.98;
+     - `skin_mask` is a window on hue 27.5°–87.5° (centre 57.5°, full weight on 37.5°–77.5°), C from 0.010 to 0.22, L from 0.12 to 0.98 (widened towards dark and less saturated tones, so dark brown and black skin are covered). It protects chroma only: holding skin lightness with a global mask folds 1.6 to 5 % of the grid on 3 real pairs out of 8, even after the strongest automatic smoothing. A skin that came out too dark is lifted per zone (`keep_tone`, `exposure`);
      - `vivid_mask` protects saturated colours (C from 0.04 to 0.12).
    - The whole displacement is multiplied by `mix`.
 4. **Regularisation and fold control (`core/regularize.py`).**
    - Separable 3D Gaussian blur `smooth_field`, with a radius in cells of `smoothing × (N − 1) / 32`.
    - `fold_fraction` measures the share of grid edges along which `L` drops by more than 0.001 while R, G or B increases. If the settings add more than 0.5 % of folds (`MAX_EXTRA_FOLDS`) over `model.fold_reference()`, the smoothing is doubled automatically (starting at 0.5, up to 3 steps).
-5. **Finishing (`core/finishing.py:apply_finishing`).**
+5. **Manual retouch (`model.retouch_lab`).** A model may carry a retouch set by hand (the per-zone sliders of the zones method). It is added here, after the adjustments and the fold control: strengths, protections and mix never dose it, and it never raises the automatic smoothing. It is smoothed once, lightly (`RETOUCH_SMOOTHING = 0.5`, or the user's smoothing when larger). `model.transfer_lab` is the part steps 2 to 4 work on; `apply_lab` is both.
+6. **Finishing (`core/finishing.py:apply_finishing`).**
    - Monotone cubic tone curve on `L` (Fritsch–Carlson / PCHIP, no SciPy dependency).
    - 3 colour wheels (shadows, midtones, highlights) weighted by the Bernstein basis `(1−L)²`, `2L(1−L)`, `L²`.
    - 8 Gaussian colour bands (σ = 22°, weighted by `smoothstep(C, 0.01, 0.04)` so greys are ignored), plus global saturation and vibrance.
-6. **Output and gamut.** Gamut compression at constant hue and lightness, by bisection (12 iterations) towards the linear cube of the target space (`gamut_compress(lab_out, to_linear=space.oklab_to_linear)`), then encoding with `space.from_oklab`.
+7. **Output and gamut.** Gamut compression at constant hue and lightness, by bisection (12 iterations) towards the linear cube of the target space (`gamut_compress(lab_out, to_linear=space.oklab_to_linear)`), then encoding with `space.from_oklab`.
 
 ---
 
@@ -164,7 +165,14 @@ Designed to reproduce the behaviour of an analog print without tonal inversions 
   C_{ij} = 2.0\,(\ell_i - \ell_j)^2 + 0.5\,\frac{\lVert ab_i - ab_j \rVert^2}{s_{ab}^2}
   ```
 
+- **Global component (`ToneGlobalModel`).** Chroma follows the affine Oklab transfer; lightness follows the monotone quantile curve of the look engine (`fit_tone_curve`), not a straight line: a line sends the low mid-tones under the reference's own shadows, the curve cannot. On the bench this alone takes `zones` on same content from 0.17 / 0.13 to 0.12 / 0.08 (tuning / control lot).
 - **Baking.** Each zone applies a 2×2 MKL map in chroma towards the blend of its targets; lightness follows the monotone global transfer by default (`luminance_strength = None`) to avoid folds. Zones are blended with soft weights (Mahalanobis distance regularised by σ₀ = 0.02, temperature τ, area prior β = 0.3, global fallback logit −4.5).
+- **Manual retouch of a zone (`zone_retouch`, `Link.keep_tone`, `Link.retouch`).** A second displacement, separate from the transfer:
+  - `keep_tone` (0 to 1) brings the zone's lightness back towards the one it has in the source;
+  - `retouch.exposure` (−1 to 1) bends lightness with a power curve `L ** (0.55 ** e)`: nothing at black and white, up to ±0.217 in between, always increasing with `L`; a lift fades out under L = 0.06, and a dark colour that is lifted gets half of its `C / L` back;
+  - `retouch.saturation` scales chroma from ×0.3 to ×1.8, `retouch.warmth` shifts it by up to 0.08 along the warm axis, `retouch.tint` by up to 0.06 on `a`.
+  - The retouch of each zone is blended with the same soft weights **without the area prior**, so a zone covering 3 % of the picture owns its colours as frankly as a large one.
+  - The discrete levels of `Intent` (`-large` … `+large`, recipes written before the sliders) keep their exact effect and add up with the retouch; the inspector shows them on the sliders (`retouch_from_intent`) and replaces a level when its slider is moved.
 - **Conflicts.** `find_conflicts` reports pairs of zones whose Bhattacharyya coefficient exceeds 0.3 and whose displacements differ by more than 0.05. `harmonize_conflicts` merges the targets of conflicting `"auto"` links when the pair is loaded.
 
 ---
@@ -177,6 +185,8 @@ Designed to reproduce the behaviour of an analog print without tonal inversions 
   - In `"look"` mode, the `"links"` block is ignored silently, even when present or malformed.
   - If `recipe.analysis_id` differs from the SHA-256 fingerprint of the loaded pair: in `"look"` mode every setting (`separation`, `protect_vivid`, `locality`, `global`, `finishing`) is applied **except `look.focus`** (the ids `R1..Rn` no longer name the same regions), with a note in the status bar.
   - `merge_finishing` only overwrites the keys explicitly present in `recipe.finishing_keys`, so the user's wheels and curve survive when the AI only adjusts `vibrance` or `saturation`.
+- **Zone retouch in a recipe.** A link may carry `"keep_tone"` (0 to 1) and `"retouch": {"exposure", "saturation", "warmth", "tint"}` (−1 to 1 each). `"intent"` with levels is still read and keeps its effect; both may be given together.
+- **Zones pack (`core/ai_pack.py`).** When a render is on screen, `write_pack` adds `7_current_render.jpg` and, in `analysis.json` and in the prompt, one row per source zone: lightness and chroma in the source, in the current render and in its target, plus the current settings of its link (`zone_measures`). The prompt asks the AI to correct that render and explains `keep_tone`, `retouch` and the per-link `luminance_strength`.
 - **Prompt guardrails (`core/look_pack.py`, `core/ai_pack.py`).**
   - Never advise the AI to lower `luminance_strength` or `chroma_strength` out of caution: the strengths multiply (`strength × chroma_strength × mix`).
   - The JSON example generated in `_PROMPT` (`example_recipe`) must always be checked by a unit test through `parse_recipe`.
@@ -197,8 +207,8 @@ Measured on 25 neutral photographs, 33³ LUT in Display P3. Each cell gives the 
 
 | Regime | `look` (default) | `zones` | `oklab` | Finding |
 |---|---|---|---|---|
-| **Same content** (`Q = P`) | **0.06 – 0.07** | 0.13 – 0.17 | 0.18 – 0.20 | `look` recovers the tone curve and the chroma stretches almost exactly, with no fold on any pair. |
-| **Other content** (`Q ≠ P`), locality 0 % | 4.1 – 6.3 | 4.3 – 5.9 | 4.2 – 5.8 | Two unrelated photographs differ about 3 times more from each other (0.156 Oklab) than the grade moves colours (0.056). Any alignment of distributions therefore copies the subject. |
+| **Same content** (`Q = P`) | **0.06 – 0.07** | 0.08 – 0.12 | 0.18 – 0.20 | `look` recovers the tone curve and the chroma stretches almost exactly, with no fold on any pair. |
+| **Other content** (`Q ≠ P`), locality 0 % | 4.1 – 6.3 | 4.1 – 6.3 | 4.2 – 5.8 | Two unrelated photographs differ about 3 times more from each other (0.156 Oklab) than the grade moves colours (0.056). Any alignment of distributions therefore copies the subject. |
 | **Other content** (`Q ≠ P`), locality 100 % | **1.45 – 1.60** | — | — | The soft limit (`with_locality`) divides the over-transfer of the subject by 3 to 4, with no computing cost and no fold. |
 
 > **Calibration rule.** Never retune the internal constants of `core/look.py` to lower the "other content" score at zero locality: it is a fundamental limit of statistical identifiability, not a defect of the constants. Any algorithmic change in `core/` must keep the "same content" residual and satisfy the oracles of `tests/test_look.py`.
@@ -212,3 +222,4 @@ Measured on 25 neutral photographs, 33³ LUT in Display P3. Each cell gives the 
 3. **Qt warning `QFont::setPointSize <= 0`.** `theme.qss` sets font sizes in `px`. Never use `QPushButton.setMenu()` or `QFont.setPointSizeF()` without checking `pointSizeF() > 0`; open each `QMenu` by hand with `menu.popup(...)`, as done for `importRecipeButton`, `focusButton` and `lookRecipeButton`.
 4. **The local `.env` file takes precedence.** `load_settings()` loads `.env`, which overrides the default in the code (`COLOR_TRANSFER_METHOD`). Interface tests that depend on a given algorithm must select it explicitly.
 5. **Lifetime of `QThread` objects (`MainWindow._retire_transfer_worker`).** A `TransferWorker` replaced by a new request while it is running must never be destroyed by Python's garbage collector before it finishes (fatal Qt crash). Its signals are disconnected and a reference is kept in `_stale_transfer_workers` until the `finished` signal.
+6. **A dark colour holds little chroma.** At L ≈ 0.25 a display shows a chroma of about 0.06 on skin hues. A saturation or warmth retouch on a dark zone is computed in full by the engine and then reduced by the final gamut compression: lift the zone first (`keep_tone`, `exposure`) to give its colour room.

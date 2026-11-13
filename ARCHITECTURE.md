@@ -1,22 +1,23 @@
-# StealZaLut — Architecture Technique & Contexte de Référence
+# StealZaLut — Technical Architecture & Reference Context
 
-> **Source de vérité unique.** Ce document et `README.md` constituent les **seuls fichiers de contexte principaux** du projet. Ils remplacent et consolident l'ensemble des notes historiques (`CONTEXT.md`, `docs/approach-v3/*`, `docs/audit/*`).
+> **Single source of truth.** This document and `README.md` are the **only context files** of the project. They replace and consolidate all earlier notes (`CONTEXT.md`, `docs/approach-v3/*`, `docs/audit/*`), which remain available in the Git history.
 
 ---
 
-## 1. Règles d'Ingénierie & Garde-Fous (Non-Négociables)
+## 1. Engineering Rules & Guardrails (Non-Negotiable)
 
-Tout développeur ou assistant IA intervenant sur ce dépôt doit impérativement respecter ces règles :
+Every developer or AI assistant working on this repository must follow these rules:
 
-1. **Unicité documentaire (Anti-Bloat)** : Ne jamais créer de fichiers `.md` secondaires (journaux d'état, sous-plans, notes de session) pour itérer. Toute mise à jour architecturale s'effectue uniquement dans `ARCHITECTURE.md` et `README.md`.
-2. **Zéro attribution IA** : N'écrire sous aucun prétexte `Co-Authored-By`, `Generated with…`, ni le nom d'un modèle d'IA dans les commits, commentaires, docstrings ou fichiers du dépôt.
-3. **Sécurité Git & Réseau** :
-   * Ne **jamais** exécuter `git push`, `git remote -v`, `git config --list` ni lire `.git/config` (l'URL distante contient un jeton en clair).
-   * L'application est **100 % hors-ligne** : aucune dépendance réseau, aucun appel d'API IA, aucune clé.
-4. **Économie d'espace disque** : La partition locale étant saturée ($> 95\,\%$), ne jamais écrire d'images de test, de fichiers `.npy` ou de planches comparatives dans le dépôt. Utiliser exclusivement un dossier temporaire hors dépôt (`mktemp -d`) et le supprimer immédiatement après usage.
-5. **Conventions de langue & validation** :
-   * Textes d'interface (UI) et messages d'erreur utilisateur en **français** ; code, identifiants, docstrings et messages de commit (`feat:`, `fix:`, `docs:`) en **anglais**.
-   * Avant chaque commit, les trois commandes suivantes doivent réussir sans erreur ni avertissement :
+1. **One set of documents (no bloat).** Never create secondary `.md` files (status logs, sub-plans, session notes) to iterate. Every architectural update goes into `ARCHITECTURE.md` and `README.md` only.
+2. **No AI attribution.** Never write `Co-Authored-By`, `Generated with…` or the name of an AI model in commits, comments, docstrings or any file of the repository.
+3. **Git and network safety.**
+   - **Never** run `git push`, `git remote -v`, `git config --list`, and never read `.git/config`: the remote URL contains a token in clear text.
+   - The application is **100 % offline**: no network dependency, no AI API call, no key.
+4. **Disk space.** The local drive is nearly full (over 95 %). Never write test images, `.npy` files or comparison plates in the repository. Use a temporary folder outside the repository (`mktemp -d`) and delete it right after use.
+5. **Languages and validation.**
+   - Interface texts and user-facing error messages are in **French**. Code, identifiers, docstrings, commit messages (`feat:`, `fix:`, `docs:`) and these two documents are in **English**.
+   - Before every commit, the three commands below must pass with no error and no warning:
+
      ```bash
      .venv/Scripts/python.exe -m pytest -q
      .venv/Scripts/python.exe -m ruff check src tests
@@ -25,164 +26,189 @@ Tout développeur ou assistant IA intervenant sur ce dépôt doit impérativemen
 
 ---
 
-## 2. Découplage Architectural & Arborescence
+## 2. Layers & Source Tree
 
-L'application suit un patron **Model $\to$ Workers $\to$ View** strictement découplé :
-* **`src/stealzalut/core/`** : Mathématiques pures, science des couleurs et sérialisation. **Interdiction absolue d'y importer `PySide6`.**
-* **`src/stealzalut/workers/`** : Encapsulation des calculs dans des `QThread` (`PySide6.QtCore` uniquement), communiquant vers l'UI par `Signal`.
-* **`src/stealzalut/gui/`** : Couche de présentation `PySide6.QtWidgets` et historique d'annulation immuable.
+The application follows a strictly decoupled **Model → Workers → View** pattern:
+
+- **`src/stealzalut/core/`**: pure mathematics, colour science and serialisation. **Importing `PySide6` here is forbidden.**
+- **`src/stealzalut/workers/`**: computations wrapped in `QThread` (`PySide6.QtCore` only), reporting to the interface through `Signal`.
+- **`src/stealzalut/gui/`**: `PySide6.QtWidgets` presentation layer and immutable undo history.
 
 ```text
 src/stealzalut/
-├── main.py                     # Point d'entrée QApplication + chargement theme.qss
-├── config.py                   # Chargement .env -> dataclass gelée Settings (défaut: method="look")
-├── core/                       # ★ LOGIQUE PURE (Zéro dépendance Qt)
-│   ├── colorspace.py           # Conversions sRGB <-> RGB linéaire <-> Oklab <-> Oklch, gamut_compress
-│   ├── rgb_spaces.py           # RGBSpace (Bradford D50->D65), CUBE_SPACES (sRGB, P3, AdobeRGB, Rec709)
-│   ├── color_transfer.py       # Classe abstraite TransferModel, fit_transfer, SUPPORTED_METHODS (11)
-│   ├── look.py                 # Moteur par défaut "look" (courbe monotone + transport chroma par bande)
-│   ├── palette.py              # Segmentation k-means Oklab déterministe (256 px), ColourStats, analysis_id
-│   ├── matching.py             # Appariement optimal entropique de Sinkhorn entre ZonePalettes
-│   ├── correspondence.py       # CorrespondenceTable immuable, Link, Intent, opérations d'édition pures
-│   ├── zone_transfer.py        # Moteur "zones", mélange doux de Mahalanobis, conflits de Bhattacharyya
-│   ├── ambiance.py             # Moteur "ambiance" (courbe de teinte par L pour références monochromes)
-│   ├── grading.py              # GradingParams, masques (neutres/peau/vifs), build_grid unifié
-│   ├── regularize.py           # Flou gaussien séparable 3D (smooth_field), mesure de repli (fold_fraction)
-│   ├── finishing.py            # Finishing : 3 roues de Bernstein, courbe PCHIP, 8 bandes TSL, sat/vibrance
-│   ├── lut_engine.py           # Grille neutre [0,1]^3 (R rapide, G moyen, B lent), VALID_LUT_SIZES={17,33,64}
-│   ├── lut_apply.py            # Interpolation trilinéaire (apply_lut, apply_lut_colors, render_lut)
-│   ├── lut_export.py           # Écriture/lecture du format standard Iridas .cube
-│   ├── recipe.py               # Parseur et sérialiseur de recettes .szl v2 (modes look, zones, ambiance)
-│   ├── look_pack.py            # Pack IA du mode "look" (inclut 3_current_render.jpg et tableau d'écarts)
-│   └── ai_pack.py              # Pack IA du mode "zones" (planches de zones isolées et vues d'ensemble)
-├── workers/                    # ★ THREADS ASYNCHRONES (QtCore)
-│   ├── transfer_worker.py      # Calcul du modèle, cuisson de la grille d'aperçu et rendu WideImage
-│   └── export_worker.py        # Cuisson à la résolution cible et écriture du fichier .cube
-├── gui/                        # ★ PRÉSENTATION (QtWidgets)
-│   ├── main_window.py          # Orchestration UI, cache du modèle (_model_cache), gestion workers périmés
-│   ├── history.py              # Pile Undo/Redo immuable (EditState avec fenêtre de fusion 1.0 s)
-│   ├── overlay.py              # Surlignage et détourage des zones sur les vignettes
-│   ├── zone_text.py            # Libellés français des intentions, origines et couleurs dominantes
-│   ├── styles/theme.qss        # Thème sombre Qt (polices en px)
+├── main.py                     # QApplication entry point, loads theme.qss
+├── config.py                   # .env -> frozen Settings dataclass (default: method="look")
+├── core/                       # PURE LOGIC (no Qt dependency)
+│   ├── colorspace.py           # sRGB <-> linear RGB <-> Oklab <-> Oklch, gamut_compress
+│   ├── rgb_spaces.py           # RGBSpace (Bradford D50->D65), CUBE_SPACES (sRGB, P3, Adobe RGB, Rec.709)
+│   ├── color_transfer.py       # Abstract TransferModel, fit_transfer, SUPPORTED_METHODS (11)
+│   ├── look.py                 # Default "look" engine (monotone tone curve + per-band chroma transport)
+│   ├── palette.py              # Deterministic Oklab k-means (256 px), ColourStats, analysis_id
+│   ├── matching.py             # Entropic optimal matching (Sinkhorn) between ZonePalettes
+│   ├── correspondence.py       # Immutable CorrespondenceTable, Link, Intent, pure edit operations
+│   ├── zone_transfer.py        # "zones" engine, soft Mahalanobis blend, Bhattacharyya conflicts
+│   ├── ambiance.py             # "ambiance" engine (tint curve along L for monochrome references)
+│   ├── grading.py              # GradingParams, masks (neutrals/skin/vivid), unified build_grid
+│   ├── regularize.py           # Separable 3D Gaussian blur (smooth_field), fold measure (fold_fraction)
+│   ├── finishing.py            # Finishing: 3 Bernstein wheels, PCHIP curve, 8 HSL bands, sat/vibrance
+│   ├── lut_engine.py           # Neutral grid [0,1]^3 (R fastest, G, B slowest), VALID_LUT_SIZES={17,33,64}
+│   ├── lut_apply.py            # Trilinear interpolation (apply_lut, apply_lut_colors, render_lut)
+│   ├── lut_export.py           # Reads and writes the standard Iridas .cube format
+│   ├── recipe.py               # Parser and serialiser of .szl v2 recipes (look, zones, ambiance)
+│   ├── look_pack.py            # AI pack of the "look" mode (with 3_current_render.jpg and the gap table)
+│   └── ai_pack.py              # AI pack of the "zones" mode (isolated zone plates and overviews)
+├── workers/                    # ASYNCHRONOUS THREADS (QtCore)
+│   ├── transfer_worker.py      # Fits the model, bakes the preview grid, renders a WideImage
+│   └── export_worker.py        # Bakes at the target size and writes the .cube file
+├── gui/                        # PRESENTATION (QtWidgets)
+│   ├── main_window.py          # UI orchestration, model cache (_model_cache), stale workers
+│   ├── history.py              # Immutable undo/redo stack (EditState, 1.0 s merge window)
+│   ├── overlay.py              # Highlights and outlines zones on the thumbnails
+│   ├── zone_text.py            # French labels for intents, origins and dominant colours
+│   ├── styles/theme.qss        # Dark Qt theme (font sizes in px)
 │   └── widgets/                # image_drop_zone, preview_panel, correspondence_view, zone_inspector,
 │                               # adjustments_panel, finishing_panel, paste_recipe_dialog
 ├── utils/
-│   ├── image_io.py             # WideImage, décodage ICC natif, RAW/DNG (aperçu intégré / rawpy), HEIC
-│   └── paths.py                # Résolution des chemins compatible PyInstaller (sys._MEIPASS)
+│   ├── image_io.py             # WideImage, native ICC decoding, RAW/DNG (embedded preview / rawpy), HEIC
+│   └── paths.py                # Path resolution compatible with PyInstaller (sys._MEIPASS)
 └── devtools/
-    ├── ground_truth.py         # Banc de mesure à vérité connue en Display P3 (non importé par l'appli)
-    └── smoke_gui.py            # Capture de la vraie fenêtre en mode "look" sur une paire (contrôle visuel)
+    ├── ground_truth.py         # Known-truth bench in Display P3 (not imported by the application)
+    └── smoke_gui.py            # Captures the real window in "look" mode on one pair (visual check)
 ```
 
 ---
 
-## 3. Pipeline Colorimétrique Large Gamut (`WideImage` $\to$ Oklab $\to$ `.cube`)
+## 3. Wide-Gamut Colour Pipeline (`WideImage` → Oklab → `.cube`)
 
-### 3.1. Les Trois Espaces de Couleur
-1. **Espace de lecture (`utils/image_io.py:WideImage`)** :
-   * `load_image_rgb` retourne une instance de `WideImage` (sous-classe de `np.ndarray` `uint8`).
-   * Le tableau `uint8` lui-même contient la réduction sRGB 8 bits destinée uniquement à l'affichage Qt.
-   * Lorsque le fichier source possède un profil ICC large gamut reconnu par sous-chaîne (`Display P3`, `Adobe RGB` / `ClayRGB` / `opRGB`, `ProPhoto` / `ROMM`), `WideImage` transporte deux attributs critiques :
-     * `analysis_lab` : tableau `(h, w, 3)` en `float64` contenant les couleurs **Oklab non écrêtées** de la copie d'analyse ($256\text{ px}$), calculées directement depuis les valeurs du fichier via les matrices exactes de `core/rgb_spaces.py`.
-     * `native` et `native_space` : les pixels pleine résolution tels qu'encodés dans le fichier et leur objet `RGBSpace`.
-   * **Invariant `WideImage`** : Tout découpage, copie ou redimensionnement (`create_thumbnail`, `np.asarray`, slicing) déclenche `__array_finalize__` et remet `analysis_lab` et `native` à `None`. Le point d'entrée unique du moteur pour lire l'analyse est `core/palette.py:analysis_oklab(image)`.
-2. **Espace du moteur (`core/colorspace.py`)** :
-   * Tout le moteur travaille en **Oklab non borné**. La transformation linéaire vers LMS utilise une racine cubique signée (`np.cbrt(lms)`), préservant sans écrêtage les coordonnées hors gamut sRGB.
-   * Chaque modèle Oklab (`LookTransferModel`, `ZoneTransferModel`, `AmbianceTransferModel`, `OklabTransferModel`) implémente nativement `apply_lab(self, lab: F64) -> F64` sans passer par sRGB.
-3. **Espace d'export et d'application de la LUT (`core/rgb_spaces.py` & `core/lut_apply.py`)** :
-   * Espaces disponibles dans `CUBE_SPACES` : `SRGB`, `DISPLAY_P3`, `ADOBE_RGB` ($\gamma = 563/256$), `REC709` ($\gamma = 2,4$).
-   * `PROPHOTO_RGB` (adapté de D50 vers D65 par matrice de Bradford) est défini pour la lecture des fichiers mais **strictement exclu de `CUBE_SPACES`** : ses primaires imaginaires placent les sommets de $[0, 1]^3$ dans des régions où les réponses LMS sont négatives, détruisant la monotonie de $L$ ($0,6\,\%$ de repliement dès la grille identité).
-   * Dans `render_lut`, les pixels `native` de la source sont convertis vers l'espace choisi pour le `.cube`, interpolés trilinéairement dans la grille 3D de cet espace, puis convertis et compressés en gamut vers sRGB 8 bits uniquement à la sortie pour l'écran ou l'export d'image.
+### 3.1. The three colour spaces
 
-### 3.2. Chaîne de Cuisson Unifiée (`core/grading.py:build_grid`)
-Pour une résolution $N \in \{17, 33, 64\}$ et un espace cible `space: RGBSpace`, la séquence est unique :
-1. **Entrée** : Grille neutre $[0, 1]^3$ de forme $(N^3, 3)$ convertie en Oklab via $\text{lab}_{\text{in}} = \text{space.to\_oklab}(\text{grid})$.
-2. **Transfert brut** : $\text{lab}_{\text{raw}} = \text{model.apply\_lab}(\text{lab}_{\text{in}})$.
-3. **Dosage & Masques (`adjust_displacement`)** : Sur le champ de déplacement $\Delta = \text{lab}_{\text{raw}} - \text{lab}_{\text{in}}$ :
-   * Échelle séparée de $\Delta L$ (`luminance_strength`) et $\Delta ab$ (`chroma_strength`).
-   * Atténuation multiplicative de $\Delta ab$ uniquement (ne touche jamais $\Delta L$ pour éviter tout repliement) par trois masques `smoothstep` évalués en Oklch sur l'entrée :
-     * `neutral_mask` : protège les gris ($C \in [0,02, 0,06]$).
-     * `skin_mask` : fenêtre sur $h \in [27,5^\circ, 87,5^\circ]$ (centre $57,5^\circ$), $C \in [0,015, 0,20]$, $L \in [0,25, 0,98]$.
-     * `vivid_mask` : protège les couleurs saturées ($C \in [0,04, 0,12]$).
-   * Multiplication globale par `mix`.
-4. **Régularisation & Contrôle de Repliement (`core/regularize.py`)** :
-   * Flou gaussien séparable 3D `smooth_field` de rayon $\sigma_{\text{cells}} = \text{smoothing} \times \frac{N - 1}{32}$.
-   * Mesure de `fold_fraction` (part des arêtes de la grille 3D le long desquelles $L$ décroît de plus de $10^{-3}$ quand $R$, $G$ ou $B$ croît). Si les réglages ajoutent plus de $0,5\,\%$ (`MAX_EXTRA_FOLDS`) de replis par rapport à `model.fold_reference()`, le lissage est automatiquement doublé (départ à $0,5$, jusqu'à $3$ étapes).
-5. **Finition (`core/finishing.py:apply_finishing`)** :
-   * Courbe tonale cubique monotone (Fritsch–Carlson / PCHIP sans dépendance SciPy) sur $L$.
-   * 3 roues colorimétriques (Ombres, Tons moyens, Hautes lumières) pondérées par la base de Bernstein $(1-L)^2$, $2L(1-L)$, $L^2$.
-   * 8 bandes de couleurs gaussiennes ($\sigma = 22^\circ$, pondérées par `smoothstep(C, 0.01, 0.04)` pour ignorer les gris) + Saturation et Vibrance globales.
-6. **Sortie & Gamut** : Compression de gamut à teinte et luminosité constantes par recherche dichotomique (12 itérations) vers le cube linéaire de l'espace cible (`gamut_compress(lab_out, to_linear=space.oklab_to_linear)`), puis encodage `space.from_oklab`.
+1. **Reading space (`utils/image_io.py:WideImage`)**
+   - `load_image_rgb` returns a `WideImage`, a `uint8` subclass of `np.ndarray`.
+   - The `uint8` array itself is the 8-bit sRGB reduction, used only for display in Qt.
+   - When the file carries a wide-gamut ICC profile recognised by substring (`Display P3`, `Adobe RGB` / `ClayRGB` / `opRGB`, `ProPhoto` / `ROMM`), `WideImage` carries two more things:
+     - `analysis_lab`: an `(h, w, 3)` `float64` array of the **unclipped Oklab** colours of the analysis copy (256 px), computed from the file's own values with the exact matrices of `core/rgb_spaces.py`.
+     - `native` and `native_space`: the full-size pixels as encoded in the file, and their `RGBSpace`.
+   - **`WideImage` invariant.** Any slicing, copy or resize (`create_thumbnail`, `np.asarray`, indexing) goes through `__array_finalize__` and resets `analysis_lab` and `native` to `None`. The engine's single entry point for reading the analysis is `core/palette.py:analysis_oklab(image)`.
+2. **Engine space (`core/colorspace.py`)**
+   - The whole engine works in **unbounded Oklab**. The conversion to LMS uses a signed cube root (`np.cbrt(lms)`), so coordinates outside the sRGB gamut are kept without clipping.
+   - Every Oklab model (`LookTransferModel`, `ZoneTransferModel`, `AmbianceTransferModel`, `OklabTransferModel`) implements `apply_lab(self, lab: F64) -> F64` natively, without going through sRGB.
+3. **Export and LUT application space (`core/rgb_spaces.py`, `core/lut_apply.py`)**
+   - Spaces available in `CUBE_SPACES`: `SRGB`, `DISPLAY_P3`, `ADOBE_RGB` (gamma 563/256), `REC709` (gamma 2.4).
+   - `PROPHOTO_RGB` (adapted from D50 to D65 with a Bradford matrix) is defined for reading files but **excluded from `CUBE_SPACES`**: its imaginary primaries put corners of the `[0, 1]³` cube where LMS responses are negative, which breaks the monotonicity of `L` (0.6 % of folds on the identity grid alone).
+   - In `render_lut`, the source's `native` pixels are converted to the space chosen for the `.cube`, interpolated trilinearly in the 3D grid of that space, and only then converted and gamut-compressed to 8-bit sRGB for the screen or the image export.
 
----
+### 3.2. Unified baking chain (`core/grading.py:build_grid`)
 
-## 4. Mathématiques des Moteurs de Transfert
+For a size `N` in {17, 33, 64} and a target `space: RGBSpace`, there is one sequence:
 
-### 4.1. Moteur `look` (« Rendu » — `core/look.py`)
-Conçu pour reproduire le comportement d'un tirage argentique sans créer d'inversions tonales ni perdre de saturation au passage du gamut :
-
-1. **Courbe de tons monotone $T(L)$** :
-   * Apparie les quantiles de luminosité source et référence (pondérés par `reference_weights`) aux niveaux $u \in \{0,01, 0,05, 0,15, 0,30, 0,50, 0,70, 0,85\}$ (la masse de la scène) et $u = 0,999$ (le point blanc).
-   * Le saut de $85\,\%$ à $99,9\,\%$ est critique : il aligne le niveau des sources lumineuses (enseignes, néons) sans les forcer à occuper la même surface que dans la référence.
-   * La pente entre deux nœuds consécutifs est bornée dans $[0,35, 3,0]$ (`TONE_SLOPE`), puis interpolée par cubique monotone sur $129$ échantillons.
-2. **Transport de chroma conditionnel au ton ($12$ bandes)** :
-   * Pour chaque bande $m \in \{0, \dots, 11\}$ centrée sur le quantile source $\ell_m$ et envoyée au ton de sortie $\ell'_m = T(\ell_m)$, on tire systématiquement $3\,000$ points $(a, b)$ dans une fenêtre gaussienne autour de $\ell_m$ (source) et $\ell'_m$ (référence).
-   * Le nuage source $P$ est transporté sur le nuage cible $Q$ par **transport optimal tranché** (`sliced_transport`, $48$ directions suivant la suite du nombre d'or), pondéré par la confiance $\text{trust}_m = \min\left(1, \frac{\text{part}_m}{0,004}\right)^2$.
-   * Le déplacement $D = \text{trust}_m \cdot (\text{moved} - P)$ est décomposé en trois termes :
-     $$\Delta ab(L, a, b) = \text{cast}(L) + \text{separation} \cdot \Big( (ab - c(L))\,\text{stretch}(L)^\top + \text{field}(L, p_a, p_b) \Big)$$
-     * **$\text{cast}_m$** : déplacement moyen $\bar{D}$ de la bande (la dominante).
-     * **$\text{stretch}_m$** : application linéaire $2 \times 2$ ajustée par moindres carrés régularisés (*ridge*, `STRETCH_PRIOR = 0.005`) sur $D - \bar{D}$, dont les valeurs singulières de $I + B$ sont bornées dans $[0,5, 2,0]$. Permet de transporter exactement un gain de saturation ou une rotation de teinte même hors du support de la source.
-     * **$\text{field}_m$** : résidu non linéaire déposé bilinéairement sur un treillis $49 \times 49$ en coordonnées compandées $p = \frac{ab}{\|ab\| + 0,05}$, combinant un flou fin ($\sigma = 1,5\text{ maille}$) et un champ lointain ($\sigma = 6,0\text{ mailles}$, poids $2,0$).
-3. **Protection sélective par teinte (`protect_hue`)** :
-   * Si la référence est détectée comme monochrome (`concentration >= 0.85`), `protect_vivid` vaut automatiquement $0,8$, mais uniquement pour les teintes de la source distantes de plus de $15^\circ\text{ à }45^\circ$ (`PROTECT_HUE_RANGE`) de la teinte dominante de la référence.
-4. **Localité / Fidélité à ma photo (`locality` $\in [0, 1]$)** :
-   * Convertit le curseur $t \in (0, 1]$ en une portée maximale $r = 0,30 \cdot (0,02 / 0,30)^t$ pour la chroma et $r_L = 2r$ pour le ton.
-   * Applique une limite douce par tangente hyperbolique sans réajustement :
-     $$L_{\text{out}} = L + r_L \tanh\!\left(\frac{T(L) - L}{r_L}\right), \qquad \Delta ab_{\text{out}} = \Delta ab \cdot \frac{\tanh(\|\Delta ab\| / r)}{\|\Delta ab\| / r}$$
-   * La dérivée de $L_{\text{out}}$ restant comprise entre $1$ et $T'(L) \ge 0$, la courbe reste strictement croissante (zéro repli possible).
-
-### 4.2. Moteur `zones` (`core/palette.py`, `matching.py`, `zone_transfer.py`)
-* **Segmentation** : `cv2.kmeans` ($K=8$, graine RNG fixée à $0$) sur la copie Oklab $256\text{ px}$. Fusion des zones $< 1\,\%$ d'aire, tri par $L$ croissant ($1 \dots K$).
-* **Appariement de Sinkhorn** : matrice de coût $C_{ij} = 2,0 (\ell_i - \ell_j)^2 + 0,5 \frac{\|ab_i - ab_j\|^2}{s_{ab}^2}$, régularisation entropique $\varepsilon = 0,05$ en domaine logarithmique.
-* **Cuisson** : chaque zone applique une carte MKL $2 \times 2$ en chroma vers le mélange de ses cibles ; la luminosité suit par défaut le transfert global monotone (`luminance_strength = None`) pour éviter les replis. Mélange par poids doux (distance de Mahalanobis régularisée par $\sigma_0 = 0,02$, température $\tau$, a priori de surface $\beta = 0,3$, logit global de repli $-4,5$).
-* **Conflits** : `find_conflicts` signale les paires de zones dont le coefficient de Bhattacharyya dépasse $0,3$ et dont les déplacements diffèrent de plus de $0,05$. `harmonize_conflicts` fusionne automatiquement les cibles des liens `"auto"` en conflit au chargement.
+1. **Input.** The neutral grid `[0, 1]³`, shape `(N³, 3)`, is converted to Oklab: `lab_in = space.to_oklab(grid)`.
+2. **Raw transfer.** `lab_raw = model.apply_lab(lab_in)`.
+3. **Strength and masks (`adjust_displacement`).** On the displacement field `Δ = lab_raw − lab_in`:
+   - `ΔL` and `Δab` are scaled separately (`luminance_strength`, `chroma_strength`).
+   - `Δab` only is attenuated (never `ΔL`, to avoid folds) by three `smoothstep` masks evaluated in Oklch on the input:
+     - `neutral_mask` protects greys (C from 0.02 to 0.06);
+     - `skin_mask` is a window on hue 27.5°–87.5° (centre 57.5°, full weight on 37.5°–77.5°), C from 0.015 to 0.20, L from 0.25 to 0.98;
+     - `vivid_mask` protects saturated colours (C from 0.04 to 0.12).
+   - The whole displacement is multiplied by `mix`.
+4. **Regularisation and fold control (`core/regularize.py`).**
+   - Separable 3D Gaussian blur `smooth_field`, with a radius in cells of `smoothing × (N − 1) / 32`.
+   - `fold_fraction` measures the share of grid edges along which `L` drops by more than 0.001 while R, G or B increases. If the settings add more than 0.5 % of folds (`MAX_EXTRA_FOLDS`) over `model.fold_reference()`, the smoothing is doubled automatically (starting at 0.5, up to 3 steps).
+5. **Finishing (`core/finishing.py:apply_finishing`).**
+   - Monotone cubic tone curve on `L` (Fritsch–Carlson / PCHIP, no SciPy dependency).
+   - 3 colour wheels (shadows, midtones, highlights) weighted by the Bernstein basis `(1−L)²`, `2L(1−L)`, `L²`.
+   - 8 Gaussian colour bands (σ = 22°, weighted by `smoothstep(C, 0.01, 0.04)` so greys are ignored), plus global saturation and vibrance.
+6. **Output and gamut.** Gamut compression at constant hue and lightness, by bisection (12 iterations) towards the linear cube of the target space (`gamut_compress(lab_out, to_linear=space.oklab_to_linear)`), then encoding with `space.from_oklab`.
 
 ---
 
-## 5. Pont IA Hors-Ligne & Format `.szl` (v2)
+## 4. Mathematics of the Transfer Engines
 
-* **Extraction tolérante (`core/recipe.py:extract_json`)** : extrait le **dernier** bloc de code ` ```json ` d'une réponse en texte libre (permettant à l'IA de raisonner avant de conclure).
-* **Invariants de `parse_recipe` & `apply_recipe`** :
-  * Supporte `RECIPE_MODES = ("zones", "ambiance", "look")`.
-  * En mode `"look"`, le bloc `"links"` est ignoré silencieusement même s'il est présent ou mal formé.
-  * Si `recipe.analysis_id` diffère de l'empreinte SHA-256 de la paire chargée : en mode `"look"`, tous les réglages (`separation`, `protect_vivid`, `locality`, `global`, `finishing`) sont appliqués **sauf `look.focus`** (les identifiants `R1..Rn` ne désignant plus les mêmes régions), avec notification dans la barre d'état.
-  * `merge_finishing` n'écrase que les clés explicitement présentes dans `recipe.finishing_keys`, préservant les roues et la courbe de l'utilisateur lorsque l'IA n'ajuste que `vibrance` ou `saturation`.
-* **Garde-fous des Prompts (`core/look_pack.py` et `core/ai_pack.py`)** :
-  * Ne jamais conseiller à l'IA de baisser `luminance_strength` ou `chroma_strength` par prudence (les forces se multiplient : $\text{strength} \times \text{chroma\_strength} \times \text{mix}$).
-  * L'exemple JSON généré dans `_PROMPT` (`example_recipe`) doit toujours être validé par test unitaire via `parse_recipe`.
+### 4.1. `look` engine (« Rendu » in the interface — `core/look.py`)
+
+Designed to reproduce the behaviour of an analog print without tonal inversions and without losing saturation at the gamut boundary.
+
+1. **Monotone tone curve `T(L)`**
+   - Matches the lightness quantiles of the source and of the reference (weighted by `reference_weights`) at levels 0.01, 0.05, 0.15, 0.30, 0.50, 0.70, 0.85 (the bulk of the scene) and at 0.999 (the white point).
+   - The jump from 85 % to 99.9 % matters: it aligns the level of light sources (signs, neons) without forcing them to cover the same area as in the reference.
+   - The slope between two consecutive knots is bounded to [0.35, 3.0] (`TONE_SLOPE`), then the curve is interpolated by a monotone cubic on 129 samples.
+2. **Tone-conditional chroma transport (12 bands)**
+   - For each band `m` in 0…11, centred on the source quantile `ℓ_m` and sent to the output tone `ℓ'_m = T(ℓ_m)`, 3 000 points `(a, b)` are drawn in a Gaussian window around `ℓ_m` (source) and around `ℓ'_m` (reference).
+   - The source cloud `P` is carried onto the target cloud `Q` by **sliced optimal transport** (`sliced_transport`, 48 directions following the golden-ratio sequence), weighted by the trust `trust_m = min(1, share_m / 0.004)²`.
+   - The displacement `D = trust_m · (moved − P)` is split into three terms:
+
+     ```math
+     \Delta ab(L, a, b) = \mathrm{cast}(L) + \mathrm{separation} \cdot \Big( \big(ab - c(L)\big)\,\mathrm{stretch}(L)^\top + \mathrm{field}(L, p_a, p_b) \Big)
+     ```
+
+     - **`cast_m`**: the mean displacement of the band (the colour cast).
+     - **`stretch_m`**: a 2×2 linear map `B` fitted by ridge least squares (`STRETCH_PRIOR = 0.005`) on the displacement minus its mean, with the singular values of `I + B` bounded to [0.5, 2.0]. It carries a saturation gain or a hue rotation exactly, even outside the support of the source.
+     - **`field_m`**: the non-linear residual, splatted bilinearly on a 49×49 lattice in companded coordinates `p = ab / (‖ab‖ + 0.05)`, combining a fine blur (σ = 1.5 cells) and a far field (σ = 6 cells, weight 2.0).
+3. **Hue-selective protection (`protect_hue`)**
+   - If the reference is detected as monochrome (`concentration >= 0.85`), `protect_vivid` is set to 0.8 automatically, but only for source hues more than 15° to 45° (`PROTECT_HUE_RANGE`) away from the dominant hue of the reference.
+4. **Locality (« Fidélité à ma photo » in the interface; `locality` in [0, 1])**
+   - The slider value `t` in (0, 1] becomes a maximum reach `r = 0.30 · (0.02 / 0.30)^t` for chroma and `r_L = 2r` for tone. At `t = 0` there is no limit.
+   - A soft limit is applied with a hyperbolic tangent, without refitting anything:
+
+     ```math
+     L_{\mathrm{out}} = L + r_L \tanh\!\left(\frac{T(L) - L}{r_L}\right), \qquad \Delta ab_{\mathrm{out}} = \Delta ab \cdot \frac{\tanh\left(\lVert \Delta ab \rVert / r\right)}{\lVert \Delta ab \rVert / r}
+     ```
+
+   - The derivative of `L_out` stays between 1 and `T'(L)`, so the curve remains increasing: no fold is possible.
+
+### 4.2. `zones` engine (`core/palette.py`, `matching.py`, `zone_transfer.py`)
+
+- **Segmentation.** `cv2.kmeans` (K = 8, RNG seed fixed to 0) on the 256 px Oklab copy. Zones under 1 % of the area are merged; zones are sorted by increasing `L` (1…K).
+- **Sinkhorn matching.** Entropic regularisation ε = 0.05 in the log domain, with the cost matrix:
+
+  ```math
+  C_{ij} = 2.0\,(\ell_i - \ell_j)^2 + 0.5\,\frac{\lVert ab_i - ab_j \rVert^2}{s_{ab}^2}
+  ```
+
+- **Baking.** Each zone applies a 2×2 MKL map in chroma towards the blend of its targets; lightness follows the monotone global transfer by default (`luminance_strength = None`) to avoid folds. Zones are blended with soft weights (Mahalanobis distance regularised by σ₀ = 0.02, temperature τ, area prior β = 0.3, global fallback logit −4.5).
+- **Conflicts.** `find_conflicts` reports pairs of zones whose Bhattacharyya coefficient exceeds 0.3 and whose displacements differ by more than 0.05. `harmonize_conflicts` merges the targets of conflicting `"auto"` links when the pair is loaded.
 
 ---
 
-## 6. Banc à Vérité Connue & Constats Mesurés
+## 5. Offline AI Bridge & `.szl` Format (v2)
 
-Le module `src/stealzalut/devtools/ground_truth.py` évalue les méthodes sur $8$ étalonnages synthétiques connus $G$ en mesurant le **résidu** :
-$$\text{résidu} = \frac{\| \text{LUT}_{Q \to G(P)}(Q) - G(Q) \|_{\text{Oklab}}}{\| Q - G(Q) \|_{\text{Oklab}}}$$
-($0 =$ étalonnage parfaitement retrouvé ; $1 =$ équivalent à ne rien faire ; $> 1 =$ dégradation).
+- **Tolerant extraction (`core/recipe.py:extract_json`).** Takes the **last** fenced `json` code block of a free-text answer, so the AI can reason before concluding.
+- **Invariants of `parse_recipe` and `apply_recipe`.**
+  - Supports `RECIPE_MODES = ("zones", "ambiance", "look")`.
+  - In `"look"` mode, the `"links"` block is ignored silently, even when present or malformed.
+  - If `recipe.analysis_id` differs from the SHA-256 fingerprint of the loaded pair: in `"look"` mode every setting (`separation`, `protect_vivid`, `locality`, `global`, `finishing`) is applied **except `look.focus`** (the ids `R1..Rn` no longer name the same regions), with a note in the status bar.
+  - `merge_finishing` only overwrites the keys explicitly present in `recipe.finishing_keys`, so the user's wheels and curve survive when the AI only adjusts `vibrance` or `saturation`.
+- **Prompt guardrails (`core/look_pack.py`, `core/ai_pack.py`).**
+  - Never advise the AI to lower `luminance_strength` or `chroma_strength` out of caution: the strengths multiply (`strength × chroma_strength × mix`).
+  - The JSON example generated in `_PROMPT` (`example_recipe`) must always be checked by a unit test through `parse_recipe`.
 
-| Régime (25 photos neutres, LUT $33^3$ Display P3) | `look` (défaut) | `zones` | `oklab` | Constat scientifique |
+---
+
+## 6. Known-Truth Bench & Measured Findings
+
+The module `src/stealzalut/devtools/ground_truth.py` evaluates the methods on 8 known synthetic grades `G` by measuring the **residual**:
+
+```math
+\mathrm{residual} = \frac{\lVert \mathrm{LUT}_{Q \to G(P)}(Q) - G(Q) \rVert_{\mathrm{Oklab}}}{\lVert Q - G(Q) \rVert_{\mathrm{Oklab}}}
+```
+
+0 means the grade is recovered exactly, 1 means no better than doing nothing, above 1 means worse than doing nothing.
+
+Measured on 25 neutral photographs, 33³ LUT in Display P3. Each cell gives the range over the two lots (tuning and control).
+
+| Regime | `look` (default) | `zones` | `oklab` | Finding |
 |---|---|---|---|---|
-| **Même contenu ($Q = P$)** | **$0,06\text{ – }0,07$** | $0,13\text{ – }0,17$ | $0,18\text{ – }0,20$ | `look` retrouve quasi parfaitement la courbe de tons et les étirements de chroma, avec $0$ repliement sur toutes les paires. |
-| **Autre contenu ($Q \neq P$, localité $0\,\%$)** | $4,1\text{ – }6,3$ | $4,3\text{ – }5,9$ | $4,2\text{ – }5,8$ | Deux photos sans rapport diffèrent $\sim 3\times$ plus entre elles ($0,156$ Oklab) que l'étalonnage ne déplace les couleurs ($0,056$). Tout alignement de distributions copie donc le sujet. |
-| **Autre contenu ($Q \neq P$, localité $100\,\%$)** | **$1,45\text{ – }1,60$** | — | — | Le bornage doux (`with_locality`) divise par $3\text{ à }4$ le sur-transfert de sujet, sans coût de calcul ni repliement. |
+| **Same content** (`Q = P`) | **0.06 – 0.07** | 0.13 – 0.17 | 0.18 – 0.20 | `look` recovers the tone curve and the chroma stretches almost exactly, with no fold on any pair. |
+| **Other content** (`Q ≠ P`), locality 0 % | 4.1 – 6.3 | 4.3 – 5.9 | 4.2 – 5.8 | Two unrelated photographs differ about 3 times more from each other (0.156 Oklab) than the grade moves colours (0.056). Any alignment of distributions therefore copies the subject. |
+| **Other content** (`Q ≠ P`), locality 100 % | **1.45 – 1.60** | — | — | The soft limit (`with_locality`) divides the over-transfer of the subject by 3 to 4, with no computing cost and no fold. |
 
-> **Règle de calibrage** : Ne jamais recalibrer les constantes internes de `core/look.py` pour tenter d'abaisser le score « autre contenu » à localité nulle : c'est une limite fondamentale d'identifiabilité statistique, pas un défaut de constantes. Toute modification algorithmique de `core/` doit maintenir le résidu « même contenu » et respecter les oracles de `tests/test_look.py`.
+> **Calibration rule.** Never retune the internal constants of `core/look.py` to lower the "other content" score at zero locality: it is a fundamental limit of statistical identifiability, not a defect of the constants. Any algorithmic change in `core/` must keep the "same content" residual and satisfy the oracles of `tests/test_look.py`.
 
 ---
 
-## 7. Pièges Techniques & Invariants du Code
+## 7. Technical Pitfalls & Code Invariants
 
-1. **Compteurs de méthodes dans les tests** : `tests/test_color_transfer.py` et `tests/test_gui.py` vérifient `len(SUPPORTED_METHODS) == 11` et `window._algo_combo.count() == 11`.
-2. **Constructeur positionnel de `EditState` (`gui/history.py`)** : `EditState` est instancié positionnellement à plusieurs endroits. Tout nouveau champ doit **obligatoirement être ajouté à la fin avec une valeur par défaut**.
-3. **Avertissement Qt `QFont::setPointSize <= 0`** : `theme.qss` définit la taille des polices en `px`. Ne jamais utiliser `QPushButton.setMenu()` ni `QFont.setPointSizeF()` sans vérifier `pointSizeF() > 0` ; ouvrir les `QMenu` manuellement via `menu.popup(...)` (comme pour `importRecipeButton`, `focusButton` et `lookRecipeButton`).
-4. **Priorité du fichier `.env` local** : `load_settings()` charge `.env` qui prime sur la valeur par défaut du code (`COLOR_TRANSFER_METHOD`). Les tests d'interface qui dépendent d'un algorithme précis doivent le sélectionner explicitement.
-5. **Gestion du cycle de vie des `QThread` (`MainWindow._retire_transfer_worker`)** : Un `TransferWorker` remplacé par une nouvelle requête pendant qu'il tourne ne doit jamais être détruit par le ramasse-miettes Python avant sa fin (crash fatal Qt). Ses signaux sont déconnectés et sa référence est conservée dans `_stale_transfer_workers` jusqu'au signal `finished`.
+1. **Method counters in the tests.** `tests/test_color_transfer.py` and `tests/test_gui.py` check `len(SUPPORTED_METHODS) == 11` and `window._algo_combo.count() == 11`.
+2. **Positional constructor of `EditState` (`gui/history.py`).** `EditState` is built positionally in several places. Any new field must be **added at the end, with a default value**.
+3. **Qt warning `QFont::setPointSize <= 0`.** `theme.qss` sets font sizes in `px`. Never use `QPushButton.setMenu()` or `QFont.setPointSizeF()` without checking `pointSizeF() > 0`; open each `QMenu` by hand with `menu.popup(...)`, as done for `importRecipeButton`, `focusButton` and `lookRecipeButton`.
+4. **The local `.env` file takes precedence.** `load_settings()` loads `.env`, which overrides the default in the code (`COLOR_TRANSFER_METHOD`). Interface tests that depend on a given algorithm must select it explicitly.
+5. **Lifetime of `QThread` objects (`MainWindow._retire_transfer_worker`).** A `TransferWorker` replaced by a new request while it is running must never be destroyed by Python's garbage collector before it finishes (fatal Qt crash). Its signals are disconnected and a reference is kept in `_stale_transfer_workers` until the `finished` signal.

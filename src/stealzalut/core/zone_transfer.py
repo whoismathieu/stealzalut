@@ -131,25 +131,21 @@ class ZoneTransferModel(TransferModel):
         return replace(self, params=params)
 
     def apply(self, colors: F64) -> F64:
-        lab = srgb_to_oklab(colors)
-        out = lab + self.displacement(lab, colors)
-        return oklab_to_srgb(gamut_compress(out))
+        return oklab_to_srgb(gamut_compress(self.apply_lab(srgb_to_oklab(colors))))
 
     def apply_lab(self, lab: F64) -> F64:
         return lab + self.displacement(lab)
 
     # ── Internals ────────────────────────────────────────────────────────
 
-    def displacement(self, lab: F64, srgb: F64 | None = None) -> F64:
-        """Blended Oklab displacement for colours *lab* ``(N, 3)``."""
-        if srgb is None:
-            srgb = oklab_to_srgb(gamut_compress(lab))
+    def displacement(self, lab: F64) -> F64:
+        """Blended Oklab displacement for colours *lab* ``(N, 3)``, inside sRGB or not."""
         zones = self.source.zones
         n, k = lab.shape[0], len(zones)
         logits = np.empty((n, k + 1))
         deltas = np.empty((k + 1, n, 3))
 
-        global_delta = srgb_to_oklab(self.global_model.apply(srgb)) - lab
+        global_delta = self.global_model.apply_lab(lab) - lab
         logits[:, 0] = self.params.background_logit
         deltas[0] = global_delta
 
@@ -282,8 +278,7 @@ def find_conflicts(model: ZoneTransferModel) -> list[Conflict]:
     """
     zones = model.source.zones
     means = np.array([z.mean for z in zones])
-    global_delta = srgb_to_oklab(model.global_model.apply(oklab_to_srgb(gamut_compress(means))))
-    global_delta -= means
+    global_delta = model.global_model.apply_lab(means) - means
     mean_delta = {
         z.id: zone_delta(
             z.mean[None, :], z, model.table.link(z.id), model.reference, global_delta[i : i + 1]

@@ -525,6 +525,56 @@ class TestSeparationSlider:
         finally:
             window.stop_workers()
 
+    def test_locality_slider_only_visible_for_look(
+        self, qapp: QApplication, default_settings: Settings
+    ) -> None:
+        window = MainWindow(settings=default_settings)
+        try:
+            window._algo_combo.setCurrentIndex(window._algo_combo.findData("mkl"))
+            assert window._locality_slider.isHidden() and window._locality_label.isHidden()
+            window._algo_combo.setCurrentIndex(window._algo_combo.findData("look"))
+            assert not window._locality_slider.isHidden()
+            assert window._locality_slider.value() == 0  # off unless asked for
+            assert window._locality_value.text() == "0 %"
+        finally:
+            window.stop_workers()
+
+    def test_locality_slider_changes_the_model(
+        self, qapp: QApplication, default_settings: Settings
+    ) -> None:
+        from stealzalut.core.look import REACH_RANGE, LookTransferModel, fit_look
+
+        rng = np.random.default_rng(0)
+        src = rng.integers(0, 255, (48, 48, 3), dtype=np.uint8)
+        ref = rng.integers(0, 255, (48, 48, 3), dtype=np.uint8)
+        window = MainWindow(settings=default_settings)
+        try:
+            window._algo_combo.setCurrentIndex(window._algo_combo.findData("look"))
+            fitted = fit_look(src, ref)
+            plain = window._effective_model(fitted)
+            assert isinstance(plain, LookTransferModel) and plain.reach is None
+            window._locality_slider.setValue(100)
+            assert window._locality_value.text() == "100 %"
+            model = window._effective_model(fitted)
+            assert isinstance(model, LookTransferModel)
+            assert model.reach == pytest.approx(REACH_RANGE[1])
+        finally:
+            window.stop_workers()
+
+    def test_locality_is_undoable(self, qapp: QApplication, default_settings: Settings) -> None:
+        window = MainWindow(settings=default_settings)
+        try:
+            window._algo_combo.setCurrentIndex(window._algo_combo.findData("look"))
+            window._locality_slider.setValue(40)
+            assert window._history.current.locality == 0.4
+            window.undo()
+            assert window._history.current.locality == 0.0
+            assert window._locality_slider.value() == 0
+            window.redo()
+            assert window._locality_slider.value() == 40
+        finally:
+            window.stop_workers()
+
 
 def _write_rgb(path: Path, rgb: np.ndarray) -> Path:
     cv2.imwrite(str(path), cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))

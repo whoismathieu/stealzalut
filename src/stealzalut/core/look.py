@@ -82,10 +82,25 @@ FIELD_PRIOR = 2.0
 #: Pulls the far field to zero where the source has no colour at all.
 FAR_PRIOR = 0.05
 
+#: Bounds on the singular values of a band's linear chroma map (``I + stretch``).
+STRETCH_LIMITS: tuple[float, float] = (0.5, 2.0)
+#: Chroma spread (Oklab) below which a band is too grey to read a stretch from.
+STRETCH_PRIOR = 0.005
+
 #: Chroma range over which a source colour counts as vivid (as in grading).
 VIVID_CHROMA: tuple[float, float] = (0.04, 0.12)
 #: Protection of vivid source colours when the reference has a single hue.
 MONOCHROME_VIVID_PROTECTION = 0.8
+#: Hue distance (degrees) from the reference's single hue over which the
+#: protection sets in: a vivid colour of that same hue *is* the look and
+#: follows it; colours of other hues are the ones a uniform filter would kill.
+PROTECT_HUE_RANGE: tuple[float, float] = (15.0, 45.0)
+#: Range of the locality setting (0 = follow the reference all the way).
+LOCALITY_RANGE: tuple[float, float] = (0.0, 1.0)
+#: Reach (largest chroma displacement, Oklab) at the smallest and at full locality.
+REACH_RANGE: tuple[float, float] = (0.30, 0.02)
+#: Reach of the tone curve, as a multiple of the chroma reach.
+TONE_REACH_RATIO = 2.0
 #: Range of the weight of a reference zone (0 = ignored, 1 = normal).
 FOCUS_RANGE: tuple[float, float] = (0.0, 4.0)
 #: Range of the separation setting.
@@ -236,6 +251,33 @@ def _splat(points: F64, values: F64) -> tuple[F64, F64]:
     return total, count
 
 
+def fit_stretch(points: F64, move: F64) -> tuple[F64, F64]:
+    """Linear part of a chroma displacement around the points' mean.
+
+    A saturation gain, a change of colour contrast or a hue rotation move
+    every colour in proportion to its distance from the band's mean colour:
+    opposite colours go opposite ways.  Averaged on the lattice such a field
+    cancels out and is diluted where samples are few; fitted here in closed
+    form it is carried exactly, for every colour.
+
+    Args:
+        points: Source chroma ``(n, 2)``.
+        move: Displacement ``(n, 2)`` with its mean (the cast) removed.
+
+    Returns:
+        ``(stretch, centre)``: the 2×2 matrix ``B`` and the mean ``c`` such
+        that ``move ≈ (points − c) Bᵀ`` (ridge least squares), with the
+        singular values of ``I + B`` kept inside :data:`STRETCH_LIMITS`.
+    """
+    centre = points.mean(axis=0)
+    x = points - centre
+    gram = x.T @ x + len(points) * STRETCH_PRIOR**2 * np.eye(2)
+    stretch = np.linalg.solve(gram, x.T @ move).T
+    u, singular, vt = np.linalg.svd(np.eye(2) + stretch)
+    bounded = (u * np.clip(singular, *STRETCH_LIMITS)) @ vt
+    return cast("F64", bounded - np.eye(2)), cast("F64", centre)
+
+
 # ── Model ────────────────────────────────────────────────────────────────────
 
 
@@ -249,14 +291,26 @@ class LookTransferModel(TransferModel):
         band_lightness: Source lightness of the band centres, ``(BANDS,)``,
             increasing.
         cast: Mean chroma displacement of each band, ``(BANDS, 2)``.
+        stretch: Linear chroma map per band, ``(BANDS, 2, 2)``: the part of
+            the displacement proportional to the distance from the band's
+            mean colour (saturation, colour contrast, hue rotation).
+        pivot: ``centre @ stretchᵀ`` per band, ``(BANDS, 2)``, so that the
+            linear part is ``ab @ stretchᵀ − pivot``.
         field: Residual chroma displacement on the lattice,
             ``(BANDS, AB_CELLS, AB_CELLS, 2)``.
         band_trust: How much each band's transport was trusted, ``(BANDS,)``
             in ``[0, 1]`` (low when the reference has almost no pixel at the
             band's tone).
-        separation: Weight of the residual field (0 = cast only).
+        separation: Weight of the linear map and the residual field (0 = cast only).
         protect_vivid: Share of the displacement withheld from vivid source
             colours.
+        protect_hue: Hue (degrees, Oklch) the protection spares: vivid
+            colours within :data:`PROTECT_HUE_RANGE` of it are not protected.
+            ``None`` = every vivid colour is protected alike.
+        reach: Largest chroma displacement a colour may receive (Oklab);
+            lightness may move by :data:`TONE_REACH_RATIO` times as much.
+            The limit is soft: small displacements pass unchanged, large
+            ones level off.  ``None`` = no limit.
     """
 
     tone_x: F64
@@ -265,8 +319,12 @@ class LookTransferModel(TransferModel):
     cast: F64
     field: F64
     band_trust: F64
+    stretch: F64
+    pivot: F64
     separation: float = 1.0
     protect_vivid: float = 0.0
+    protect_hue: float | None = None
+    reach: float | None = None
 
     @property
     def method(self) -> str:
@@ -281,9 +339,35 @@ class LookTransferModel(TransferModel):
         """Same look, different protection of vivid source colours."""
         return replace(self, protect_vivid=float(np.clip(protect_vivid, 0.0, 1.0)))
 
+    def with_locality(self, locality: float) -> LookTransferModel:
+        """Same look, kept closer to the picture it is applied to (no refit).
+
+        Two unrelated pictures differ far more than a grade moves colours:
+        matching their distributions also transfers the subject (a sky takes
+        the colour of the reference's grass).  A grade moves every colour a
+        little; a difference of subject asks for large moves.  Limiting how
+        far a colour may go keeps the first and gives up the second.
+
+        Args:
+            locality: 0 = follow the reference all the way (no limit);
+                1 = stay close to the picture (reach ``REACH_RANGE[1]``).
+        """
+        lo, hi = LOCALITY_RANGE
+        t = float(np.clip(locality, lo, hi))
+        if t <= 0.0:
+            return replace(self, reach=None)
+        far, near = REACH_RANGE
+        return replace(self, reach=float(far * (near / far) ** t))
+
     def tone(self, lightness: F64) -> F64:
         """Output lightness for input lightness values ``(N,)``."""
-        return np.interp(lightness, self.tone_x, self.tone_y)
+        out = np.interp(lightness, self.tone_x, self.tone_y)
+        if self.reach is None:
+            return out
+        # Soft limit of the displacement; the slope stays between 1 and the
+        # curve's own, so the result is still increasing
+        limit = TONE_REACH_RATIO * self.reach
+        return lightness + limit * np.tanh((out - lightness) / limit)
 
     def chroma_shift(self, lab: F64) -> F64:
         """Chroma displacement ``(N, 2)`` for Oklab colours *lab* ``(N, 3)``."""
@@ -300,11 +384,26 @@ class LookTransferModel(TransferModel):
                     residual += (w0 * w1 * w2)[:, None] * self.field[
                         i0[:, 0] + d0, i0[:, 1] + d1, i0[:, 2] + d2
                     ]
-        band_cast = np.column_stack([np.interp(band, index, self.cast[:, i]) for i in range(2)])
-        shift: F64 = band_cast + self.separation * residual
+        def per_band(values: F64) -> F64:
+            return np.column_stack(
+                [np.interp(band, index, values[:, i]) for i in range(values.shape[1])]
+            )
+
+        matrix = per_band(self.stretch.reshape(-1, 4)).reshape(-1, 2, 2)
+        linear = np.einsum("nij,nj->ni", matrix, lab[:, 1:]) - per_band(self.pivot)
+        shift: F64 = per_band(self.cast) + self.separation * (linear + residual)
         if self.protect_vivid > 0.0:
             chroma = np.hypot(lab[:, 1], lab[:, 2])
-            shift *= (1.0 - self.protect_vivid * _smoothstep(chroma, *VIVID_CHROMA))[:, None]
+            kept = self.protect_vivid * _smoothstep(chroma, *VIVID_CHROMA)
+            if self.protect_hue is not None:
+                hue = np.degrees(np.arctan2(lab[:, 2], lab[:, 1]))
+                away = np.abs((hue - self.protect_hue + 180.0) % 360.0 - 180.0)
+                kept = kept * _smoothstep(away, *PROTECT_HUE_RANGE)
+            shift *= (1.0 - kept)[:, None]
+        if self.reach is not None:
+            size = np.hypot(shift[:, 0], shift[:, 1])
+            scale = np.tanh(size / self.reach) / np.maximum(size / self.reach, 1e-12)
+            shift *= np.where(size > 0.0, scale, 1.0)[:, None]
         return shift
 
     def apply_lab(self, lab: F64) -> F64:
@@ -333,9 +432,10 @@ def fit_look(
             read from.  ``None`` = every pixel counts the same.
 
     Returns:
-        The fitted model.  Vivid source colours are protected
-        (:data:`MONOCHROME_VIVID_PROTECTION`) when the reference has a single
-        dominant hue, so that it does not act as a uniform filter.
+        The fitted model.  When the reference has a single dominant hue,
+        vivid source colours of *other* hues are protected
+        (:data:`MONOCHROME_VIVID_PROTECTION`), so that it does not act as a
+        uniform filter; vivid colours of that hue follow the look.
 
     Raises:
         ValueError: If *reference_weights* has the wrong length or no
@@ -361,6 +461,8 @@ def fit_look(
 
     field = np.zeros((BANDS, AB_CELLS, AB_CELLS, 2))
     casts = np.zeros((BANDS, 2))
+    stretches = np.zeros((BANDS, 2, 2))
+    pivots = np.zeros((BANDS, 2))
     trust = np.zeros(BANDS)
     for m in range(BANDS):
         w_s = np.exp(-0.5 * ((lab_s[:, 0] - band_l[m]) / width_s[m]) ** 2)
@@ -373,7 +475,11 @@ def fit_look(
         goal = _resample(lab_r[:, 1:], w_r, BAND_SAMPLES)
         move = trust[m] * (sliced_transport(points, goal) - points)
         casts[m] = move.mean(axis=0)
-        total, count = _splat(points, move - casts[m])
+        stretches[m], centre = fit_stretch(points, move - casts[m])
+        pivots[m] = centre @ stretches[m].T
+        # What neither the cast nor the linear map explains goes on the lattice
+        rest = move - casts[m] - (points @ stretches[m].T - pivots[m])
+        total, count = _splat(points, rest)
         far = _blur(total, SIGMA_COARSE, (0, 1)) / (
             _blur(count, SIGMA_COARSE, (0, 1)) + FAR_PRIOR
         )[..., None]
@@ -381,7 +487,8 @@ def fit_look(
         local_count = _blur(count, SIGMA_FINE, (0, 1))
         field[m] = (local_total + FIELD_PRIOR * far) / (local_count + FIELD_PRIOR)[..., None]
 
-    monochrome = colour_stats(reference).is_monochrome
+    stats = colour_stats(reference)
+    monochrome = stats.is_monochrome
     return LookTransferModel(
         tone_x=tone_x,
         tone_y=tone_y,
@@ -389,7 +496,10 @@ def fit_look(
         cast=_blur(casts, BAND_SMOOTHING, (0,)),
         field=_blur(field, BAND_SMOOTHING, (0,)),
         band_trust=trust,
+        stretch=_blur(stretches, BAND_SMOOTHING, (0,)),
+        pivot=_blur(pivots, BAND_SMOOTHING, (0,)),
         protect_vivid=MONOCHROME_VIVID_PROTECTION if monochrome else 0.0,
+        protect_hue=stats.hue if monochrome else None,
     )
 
 

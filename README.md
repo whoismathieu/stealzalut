@@ -1,144 +1,106 @@
 # StealZaLut
 
-> Application de bureau professionnelle permettant d'extraire la signature colorimétrique d'une image de référence, de l'appliquer à une image source, et d'exporter le transfert sous forme de profil 3D LUT universel (`.cube`).
+> **Générateur de LUTs 3D (`.cube`) par transport optimal conditionnel et analyse perceptuelle en espace Oklab non borné.**
+> Application de bureau (Python 3.10+ / PySide6) conçue pour transférer le rendu colorimétrique d'une photographie de référence (notamment le tirage argentique moyen format de nuit) vers une photographie source, tout en respectant la physique des espaces de couleur et les pipelines des logiciels hôtes (Lightroom Classic, Adobe Camera Raw, DaVinci Resolve).
 
 ---
 
-## 🚀 Fonctionnalités Clés
+## 1. Philosophie & Physique d'une LUT 3D
 
-* **Export 3D LUT (.cube) Professionnel :**
-  * Exportez le fichier 3D LUT universel prêt à l'emploi pour DaVinci Resolve, Photoshop, Premiere Pro, Final Cut Pro, OBS.
-  * Résolution configurable (**17³, 33³, ou 64³** points) respectant strictement l'ordre d'itération standard `.cube` (R-rapide, G-moyen, B-lent).
+Une table de correspondance 3D (`.cube`) est une fonction purement colorimétrique $f : [0, 1]^3 \to [0, 1]^3$ évaluée pixel par pixel par interpolation trilinéaire, **sans aucune information spatiale** : deux régions de même couleur d'entrée reçoivent nécessairement la même couleur de sortie.
 
-* **Développement RAW & DNG Photographiques Haute Intensité :**
-  * **Extraction des aperçus haute résolution intégrés** générés par les boîtiers photo et smartphones (colorimétrie et profil constructeur natifs).
-  * **Compensation d'exposition DNG `BaselineExposure`** automatique.
-  * **Courbe tonale photographique et rehaussement de vibrance** automatique : élimine les images sombres et ternes issues du dématriçage brut linéaire pour restituer le contraste, l'intensité et la dynamique réels de la scène.
+Pour éviter l'effet « filtre monochrome » ou l'écrasement des hautes lumières typiques des transferts statistiques globaux, **StealZaLut** sépare l'analyse de l'image de sa restitution d'affichage :
 
-* **Multiples Algorithmes de Transfert Colorimétrique :**
-  * **MKL (Monge-Kantorovitch Linear) :** Transport optimal analytique fermé entre distributions gaussiennes (Wasserstein-2).
-  * **Reinhard :** Alignement statistique de moyenne et variance dans l'espace perceptuel $L\alpha\beta$ de Ruderman.
-  * **Histogram Matching (HM) :** Égalisation et alignement précis des distributions cumulées par canal (CDF matching).
-  * **MVGD :** Décalage multivarié gaussien.
-  * **Hybrides (HM-MKL-HM & HM-MVGD-HM) :** Pipeline en 3 étapes combinant alignement d'histogramme non-linéaire et transport optimal pour des contrastes et teintes riches.
-* **Moteur 3D LUT Dynamique & Cuisson Universelle :** Évaluation directe de l'algorithme sélectionné sur une grille 3D neutre en mémoire à résolution configurable (**17³, 33³, ou 64³** points) respectant strictement l'ordre d'itération standard `.cube` (R-rapide, G-moyen, B-lent).
-* **Formats d'Images Supportés :**
-  * **Standards :** JPEG, PNG, TIFF, BMP, WebP
-  * **Apple / Mobile :** HEIC / HEIF / HIF (avec correction automatique de l'orientation EXIF via `pillow-heif`)
-  * **RAW Boîtiers Professionnels & DNG :** Dématriçage haute fidélité via `rawpy` (LibRaw) avec respect de la balance des blancs du boîtier :
-    * **Canon :** `.cr2`, `.cr3`, `.crw`
-    * **Nikon :** `.nef`, `.nrw`
-    * **Sony :** `.arw`, `.srf`, `.sr2`
-    * **Fujifilm :** `.raf`
-    * **Panasonic Lumix :** `.rw2`, `.raw`
-    * **Olympus / OM System :** `.orf`
-    * **Pentax :** `.pef`, `.ptx`
-    * **Adobe / Leica / ProRAW :** `.dng`, `.rwl`
-    * **Hasselblad / Phase One / Sigma :** `.3fr`, `.fff`, `.iiq`, `.x3f`
-* **Interface Réactive PySide6 :** Glisser-déposer d'images (**drag-and-drop**), sélection interactive de la résolution LUT, aperçu en direct du rendu, et barre de progression continue.
-* **Architecture Asynchrone QThread :** Découplage strict entre l'UI et les calculs lourds (aucun gel de l'interface lors des opérations matricielles).
-* **Architecture Modulaire de Niveau Production :**
-  * `core/` : calculs mathématiques purs sans dépendance Qt, 100 % testable unitairement.
-  * `workers/` : encapsulation `QThread` avec signaux Qt pour la progression et les résultats.
-  * `gui/` : widgets, layout réactif et feuille de style sombre (`theme.qss`).
-  * `utils/` : lecture OpenCV sécurisée et abstraction des chemins pour compatibilité PyInstaller (`sys._MEIPASS`).
+1. **Analyse en gamut natif non écrêté (`WideImage`)** : les profils ICC intégrés (Display P3, Adobe RGB, ProPhoto) sont décodés directement vers l'espace perceptuel **Oklab** en virgule flottante (`float64`), préservant les couleurs vives (néons, enseignes) qu'une conversion sRGB 8 bits précoce détruirait.
+2. **Découplage Ton / Chroma conditionnel (`look`)** : la luminosité $L$ suit une courbe cubique strictement monotone (aucune inversion de polarité tonale possible), tandis que la chrominance $(a, b)$ est transportée bande de tons par bande de tons vers la luminosité de sortie effective.
+3. **Chaîne de cuisson unifiée (`build_grid`)** : le modèle, les dosages, la protection des tons chair/neutres/vifs, le contrôle de repliement (*folding*), et la finition sont évalués en Oklab non borné. La compression de gamut à teinte constante n'est appliquée qu'à la toute dernière étape vers l'espace cible du `.cube`.
 
 ---
 
-## 🛠️ Stack Technique
+## 2. Fonctionnalités Clés
 
-* **Langage :** Python 3.10+ (Typage strict `mypy`)
-* **Interface Graphique :** `PySide6` (Qt 6)
-* **Calculs & Couleurs :** `numpy`, `opencv-python`, `color-matcher`
-* **Décodage d'Images Avancé :** `Pillow`, `pillow-heif` (HEIC), `rawpy` (DNG / RAW)
-* **Gestionnaire de Paquets :** `uv` (PEP 621 / `pyproject.toml`)
-* **Configuration :** `python-dotenv` (`.env`)
-* **Packaging :** Prêt pour `PyInstaller`
+### Moteurs de Transfert Colorimétrique (11 méthodes)
+* **Rendu (`look` — méthode par défaut)** : lit la référence comme un tirage photographique en 4 composantes :
+  * *Courbe de tons monotone* (interpolation de Fritsch–Carlson sur les quantiles $1\,\%$ à $85\,\%$ pour la masse de l'image, puis saut au point blanc à $99,9\,\%$ pour préserver l'éclat des sources lumineuses indépendamment de leur surface).
+  * *Dominante par bande de tons* (déplacement moyen de $(a, b)$ sur 12 bandes de luminosité).
+  * *Étirement linéaire $2 \times 2$ (`stretch`)* et *champ résiduel sur treillis compandé* ($49 \times 49$ avec $p = \frac{ab}{\|ab\| + 0,05}$, offrant une résolution maximale près de l'axe neutre) calculés par transport optimal tranché (*Sliced Optimal Transport*, 48 projections).
+  * *Contrôles dédiés* : **Séparation** ($\in [0, 1,5]$), **Fidélité à ma photo / Localité** ($\in [0, 1]$, bornage doux par $\tanh$ empêchant le sur-transfert de sujet quand source et référence montrent des scènes sans rapport), et **Ciblage par zone de référence** (`Référence ▾` : ignorer un cadre ou privilégier un ciel).
+* **Zones (`zones`)** : segmentation déterministe par *k-means* en Oklab ($K \in [2, 16]$, défaut $8$), appariement automatique par transport optimal entropique de Sinkhorn, et éditeur interactif de **Table de Correspondances** (liens pondérés, verrouillage par zone, intentions qualitatives, détection des conflits de Bhattacharyya).
+* **Ambiance (`ambiance`)** : conçu pour les références quasi monochromes (concentration de teinte $\ge 0,85$). Extrait une courbe de teinte continue selon $L$ et l'ajoute aux couleurs sources tout en protégeant les couleurs vives à $80\,\%$.
+* **Oklab Découplé (`oklab`)** : transport optimal linéaire gaussien séparant l'échelle de luminosité $L$ et la matrice $2 \times 2$ de Monge–Kantorovitch sur $(a, b)$.
+* **Méthodes Globales Classiques (`color-matcher`)** : `mkl`, `reinhard`, `hm`, `mvgd`, `hm-mkl-hm`, `hm-mvgd-hm`, `default`.
+
+### Espaces d'Export `.cube` & Aperçu WYSIWYG
+* **Résolutions de grille** : $17^3$ ($4\,913$ points), $33^3$ ($35\,937$ points), ou $64^3$ ($262\,144$ points).
+* **Espaces colorimétriques du `.cube`** : `sRGB`, `Display P3`, `Adobe RGB (1998)`, `Rec.709 (gamma 2.4)`. *(ProPhoto RGB est exclu de l'export `.cube` car ses primaires imaginaires génèrent des réponses cônes LMS négatives aux sommets du cube $[0, 1]^3$, provoquant un repliement de luminosité dès la grille neutre).*
+* **Aperçu fidèle au pixel près** : l'aperçu applique la grille 3D calculée dans l'espace choisi directement aux pixels natifs de l'image source par interpolation trilinéaire avant conversion sRGB pour l'écran.
+* **Export d'image pleine résolution** : export direct de la photo source étalonnée en JPEG (qualité 95), TIFF ou PNG.
+
+### Outils de Réglage & Finition (Oklab / Oklch)
+* **Ajustements globaux** : Intensité luminance, Intensité couleur, Préserver les neutres, Protection peau (fenêtre Oklch calibrée sur $h \approx 37,5^\circ\text{–}77,5^\circ$ sans bloquer $L$), Préserver les couleurs vives, Lissage 3D et Mix.
+* **Panneau Finition** : 3 roues colorimétriques (Ombres / Tons moyens / Hautes lumières pondérées par polynômes de Bernstein sur $L$), courbe tonale cubique monotone sur $L$, 8 bandes de teinte TSL gaussiennes, Saturation et Vibrance.
+
+### Pont IA Hors-Ligne & Recettes `.szl` (v2)
+* **Zéro API, zéro réseau** : l'application génère un dossier d'analyse (`_stealzalut_look_pack` ou `_stealzalut_pack` + archive `.zip`) contenant les photos, le **rendu actuel** (`3_current_render.jpg` en mode Rendu), les planches de zones, les mesures d'écarts (`analysis.json`) et le prompt pré-rempli copié dans le presse-papiers.
+* **Import intelligent** : collez directement la réponse complète de votre IA (Claude, ChatGPT, Gemini) ; StealZaLut extrait et valide le dernier bloc JSON `.szl`, fusionne la finition et détecte les dosages trop prudents (« Doser à $100\,\%$ »).
 
 ---
 
-## ⚡ Démarrage Rapide
+## 3. Intégration Lightroom Classic / Camera Raw & Fichiers RAW
 
-### 1. Installation des dépendances
+Lorsqu'un fichier RAW/DNG est chargé directement dans StealZaLut, l'application extrait l'aperçu JPEG intégré par le boîtier (souvent en Display P3 avec une courbe tonale constructeur déjà appliquée). Or, dans Adobe Camera Raw / Lightroom :
+1. Un profil `.xmp` créé à partir d'un `.cube` repose sur le socle **Adobe Standard** (et non *Adobe Couleur* ou *Apple ProRAW*).
+2. La LUT 3D est évaluée **après** le profil de base et la courbe des tonalités, dans l'espace colorimétrique sélectionné lors de la création du profil.
 
-**Sous Windows (PowerShell / Terminal) :**
+**Protocole pour une correspondance exacte entre l'aperçu StealZaLut et Lightroom :**
+1. Dans Lightroom / Camera Raw, appliquez le profil **Adobe Standard** à votre RAW avec tous les curseurs à zéro.
+2. Exportez une copie intermédiaire (JPEG ou TIFF, idéalement en **Display P3**).
+3. Utilisez cet export comme **Image Source** dans StealZaLut et exportez votre `.cube` en choisissant l'espace **Display P3**.
+4. Dans Camera Raw, créez votre profil en sélectionnant l'espace **Display P3** pour la table de couleurs, puis appliquez ce profil directement à vos fichiers RAW.
+
+---
+
+## 4. Installation & Démarrage Rapide
+
+### Prérequis
+* **Python 3.10+** et le gestionnaire de paquets [`uv`](https://docs.astral.sh/uv/).
+
+### Installation (Windows PowerShell)
 ```powershell
-# Synchronisation de l'environnement virtuel avec uv
 uv sync --all-extras
-
-# Configuration locale
 if (!(Test-Path .env)) { Copy-Item .env.example .env }
 ```
 
-**Sous WSL / Linux :**
-```bash
-UV_LINK_MODE=copy uv sync --all-extras
-cp .env.example .env
-```
-
-### 2. Lancement de l'application
-
-**Sous Windows :**
+### Lancement de l'application
 ```powershell
-# Méthode 1 : double-clic sur launch.bat (ou exécution de launch.bat / launch.ps1)
-.\launch.bat
+# Via l'environnement virtuel local
+.venv\Scripts\python.exe -m stealzalut.main
 
-# Méthode 2 : via uv
+# Ou via uv / script de lancement
 uv run stealzalut
-
-# Méthode 3 : directement avec l'environnement virtuel
-.\.venv\Scripts\stealzalut-gui.exe
-```
-
-**Sous WSL / Linux :**
-```bash
-UV_LINK_MODE=copy uv run stealzalut
+.\launch.bat
 ```
 
 ---
 
-## 🛠️ Commandes Makefile (Développement)
+## 5. Tests, Qualité de Code & Banc de Mesure
 
-Un [`Makefile`](file:///c:/Users/mathi/Documents/StealZaLut/Makefile) est disponible à la racine (utilisable dans le terminal, sous WSL/Linux, ou via le plugin Makefile de PyCharm) :
+Toute modification du code doit maintenir au vert les trois vérifications suivantes :
 
 ```bash
-make help        # Affiche la liste des commandes disponibles
-make format      # Formate le code (ruff format + check --fix)
-make lint        # Vérifie le respect du style PEP 8 (ruff check)
-make typecheck   # Vérification de typage strict (mypy)
-make test        # Lance les tests unitaires (pytest)
-make test-cov    # Lance les tests avec rapport de couverture
-make check       # Validation complète : lint + typecheck + test
-make clean       # Nettoie les caches (__pycache__, pytest, ruff, mypy...)
-make run         # Lance l'application
-make build       # Construit l'exécutable PyInstaller
+.venv/Scripts/python.exe -m pytest -q
+.venv/Scripts/python.exe -m ruff check src tests
+.venv/Scripts/python.exe -m mypy src
+```
+
+Pour évaluer objectivement les algorithmes de transfert sur un dossier d'images via le **banc de mesure à vérité connue** (en Display P3 flottant, lots `reglage` et `controle`) :
+
+```bash
+PYTHONPATH=src .venv/Scripts/python.exe -m stealzalut.devtools.ground_truth <dossier_images> --methods look,zones,oklab
 ```
 
 ---
 
-## 🧪 Tests & Qualité de Code
+## 6. Documentation Technique
 
-**Sous Windows (PowerShell) :**
-```powershell
-# Tests unitaires et d'intégration (105 tests)
-uv run pytest tests/ -v
-
-# Typage statique strict
-uv run mypy src/
-
-# Linter et conformité PEP 8
-uv run ruff check .
-```
-
-**Sous WSL / Linux :**
-```bash
-UV_LINK_MODE=copy uv run pytest tests/ -v
-UV_LINK_MODE=copy uv run mypy src/
-UV_LINK_MODE=copy uv run ruff check .
-```
-
----
-
-## 📖 Documentation d'Architecture
-
-Consultez [ARCHITECTURE.md](ARCHITECTURE.md) pour les diagrammes de séquence et de flux de données détaillant la séparation entre le `core`, les `workers`, et l'interface `gui`.
+Toute l'architecture interne, les équations mathématiques, la gestion des espaces de couleur et les invariants de développement sont détaillés dans **[ARCHITECTURE.md](ARCHITECTURE.md)**.

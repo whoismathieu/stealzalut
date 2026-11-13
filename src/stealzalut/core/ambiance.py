@@ -100,12 +100,15 @@ class AmbianceTransferModel(TransferModel):
         )
 
     def apply(self, colors: F64) -> F64:
-        lab = srgb_to_oklab(colors)
-        lightness = srgb_to_oklab(self.global_model.apply(colors))[:, 0]
+        return oklab_to_srgb(gamut_compress(self.apply_lab(srgb_to_oklab(colors))))
+
+    def apply_lab(self, lab: F64) -> F64:
+        # Everything is a function of Oklab: valid inside sRGB or not
+        lightness = np.clip(self.global_model.apply_lab(lab)[:, 0], 0.0, 1.0)
         chroma = np.hypot(lab[:, 1], lab[:, 2])
         free = 1.0 - self.protect_vivid * _smoothstep(chroma, *VIVID_CHROMA)
         ab = lab[:, 1:] * (1.0 - self.mute * free)[:, None] + free[:, None] * self.tint(lightness)
-        return oklab_to_srgb(gamut_compress(np.column_stack([lightness, ab])))
+        return np.column_stack([lightness, ab])
 
 
 def fit_ambiance(

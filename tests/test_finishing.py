@@ -138,7 +138,7 @@ class TestPipeline:
     def test_identity_finishing_keeps_raw_bake(self) -> None:
         m = fit_transfer(_img((180, 100, 80), 1), _img((70, 120, 200), 2), "oklab")
         result = build_grid(m, 17, GradingParams(), Finishing())
-        np.testing.assert_array_equal(result.grid, m.bake(17))
+        np.testing.assert_allclose(result.grid, m.bake(17), atol=1e-5)
 
     def test_finishing_is_applied_last(self) -> None:
         m = fit_transfer(_img((180, 100, 80), 1), _img((70, 120, 200), 2), "oklab")

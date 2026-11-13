@@ -29,7 +29,7 @@ from stealzalut.core.finishing import (
     with_band,
 )
 from stealzalut.core.grading import GradingParams
-from stealzalut.core.look import FOCUS_RANGE
+from stealzalut.core.look import FOCUS_RANGE, LOCALITY_RANGE
 from stealzalut.core.look import SEPARATION_RANGE as LOOK_SEPARATION_RANGE
 
 RECIPE_FORMAT = "stealzalut.recipe"
@@ -106,6 +106,8 @@ class Recipe:
     separation: float | None = None
     #: Look method: protection of vivid source colours, if given.
     protect_vivid: float | None = None
+    #: Look method: locality (0 = follow the reference, 1 = stay close to the picture), if given.
+    locality: float | None = None
     #: Look method: weight per reference zone id (zones left out weigh 1).
     focus: dict[int, float] = field(default_factory=dict)
 
@@ -176,7 +178,7 @@ def parse_recipe(source: str | dict[str, Any]) -> Recipe:
 
     grading, tau = _parse_global(data.get("global"))
 
-    separation, protect_vivid, focus = _parse_look(data.get("look"))
+    separation, protect_vivid, locality, focus = _parse_look(data.get("look"))
 
     # The look method has no links: whatever an AI adds there is ignored
     raw_links = [] if mode == "look" else data.get("links", [])
@@ -202,6 +204,7 @@ def parse_recipe(source: str | dict[str, Any]) -> Recipe:
         mode=mode,
         separation=separation,
         protect_vivid=protect_vivid,
+        locality=locality,
         focus=focus,
     )
 
@@ -279,10 +282,12 @@ def _parse_global(raw: Any) -> tuple[dict[str, float], float | None]:
     return grading, None if separation is None else _separation(separation)
 
 
-def _parse_look(raw: Any) -> tuple[float | None, float | None, dict[int, float]]:
-    """Settings of the look method: separation, vivid protection, zone weights."""
+def _parse_look(
+    raw: Any,
+) -> tuple[float | None, float | None, float | None, dict[int, float]]:
+    """Settings of the look method: separation, vivid protection, locality, zone weights."""
     if raw is None:
-        return None, None, {}
+        return None, None, None, {}
     if not isinstance(raw, dict):
         raise RecipeError("« look » doit être un objet { … }.")
 
@@ -303,9 +308,13 @@ def _parse_look(raw: Any) -> tuple[float | None, float | None, dict[int, float]]
         "protect_vivid", (0.0, 1.0), "« look.protect_vivid » doit être un nombre entre 0 et 1."
     )
 
+    locality = ranged(
+        "locality", LOCALITY_RANGE, "« look.locality » doit être un nombre entre 0 et 1."
+    )
+
     raw_focus = raw.get("focus")
     if raw_focus is None:
-        return separation, protect_vivid, {}
+        return separation, protect_vivid, locality, {}
     if not isinstance(raw_focus, dict):
         raise RecipeError('« look.focus » doit être un objet { "R1": 0, … }.')
     lo, hi = FOCUS_RANGE
@@ -317,7 +326,7 @@ def _parse_look(raw: Any) -> tuple[float | None, float | None, dict[int, float]]
                 f"« look.focus » : le poids de {key} doit être un nombre entre 0 et {hi:g}."
             )
         focus[zone] = float(weight)
-    return separation, protect_vivid, focus
+    return separation, protect_vivid, locality, focus
 
 
 def _parse_link(raw: Any, index: int) -> RecipeLink:
@@ -647,9 +656,12 @@ def look_recipe_to_dict(
     name: str = "",
     description: str = "",
     finishing: Finishing | None = None,
+    locality: float = 0.0,
 ) -> dict[str, Any]:
     """Serialise the settings of the look method; :func:`parse_recipe` reads them back."""
     look: dict[str, Any] = {"separation": separation}
+    if locality > 0.0:
+        look["locality"] = locality
     if protect_vivid is not None:
         look["protect_vivid"] = protect_vivid
     if focus:

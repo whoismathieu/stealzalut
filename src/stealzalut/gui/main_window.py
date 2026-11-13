@@ -57,6 +57,7 @@ from stealzalut.core.color_transfer import METHOD_LABELS, TransferModel
 from stealzalut.core.correspondence import CorrespondenceTable, Link
 from stealzalut.core.grading import GridResult, build_grid
 from stealzalut.core.look import (
+    LOCALITY_RANGE,
     SEPARATION_RANGE,
     LookDiagnostics,
     LookTransferModel,
@@ -64,7 +65,7 @@ from stealzalut.core.look import (
     zone_weights,
 )
 from stealzalut.core.look_pack import write_look_pack
-from stealzalut.core.lut_apply import apply_lut_full
+from stealzalut.core.lut_apply import render_lut, source_pixels
 from stealzalut.core.lut_engine import VALID_LUT_SIZES
 from stealzalut.core.palette import (
     DEFAULT_ZONE_COUNT,
@@ -118,6 +119,7 @@ logger = logging.getLogger(__name__)
 EDIT_DEBOUNCE_MS = 75
 _TAU_STEPS = 100  # slider units per τ unit
 _SEPARATION_STEPS = 100  # slider units per separation unit
+_LOCALITY_STEPS = 100  # slider units for a locality of 1
 _JPEG = (".jpg", ".jpeg")
 #: Choices of the focus menu: label, weight of the reference zone.
 _FOCUS_CHOICES: tuple[tuple[str, float], ...] = (
@@ -162,6 +164,7 @@ class MainWindow(QMainWindow):
         self._model_cache: tuple[Any, Any, str, TransferModel] | None = None
         self._pending_model_key: tuple[Any, Any, str] | None = None
         self._last_grid_result: GridResult | None = None
+        self._last_render: NDArray[np.uint8] | None = None
         # Zones method: raw fitted model shown in the editor (auto table)
         self._zone_model: ZoneTransferModel | None = None
         self._zone_count = DEFAULT_ZONE_COUNT
@@ -315,6 +318,33 @@ class MainWindow(QMainWindow):
         look_layout.addWidget(self._separation_value)
         self._refresh_separation_label()
 
+        # Locality of the look method: how far a colour may be moved
+        locality_tooltip = (
+            "Limite de combien chaque couleur peut être déplacée.\n"
+            "0 % : le rendu va jusqu'au bout vers la référence, quitte à donner à ton sujet\n"
+            "les couleurs du sujet de la référence (un ciel qui prend la couleur d'une pelouse).\n"
+            "Plus haut : ta photo garde ses couleurs et sa luminosité propres et ne prend\n"
+            "de la référence que les écarts modérés. À monter quand le rendu déforme le sujet."
+        )
+        self._locality_label = QLabel("Fidélité à ma photo :")
+        self._locality_label.setObjectName("controlLabel")
+        self._locality_label.setToolTip(locality_tooltip)
+        look_layout.addWidget(self._locality_label)
+        self._locality_slider = QSlider(Qt.Orientation.Horizontal)
+        self._locality_slider.setObjectName("localitySlider")
+        self._locality_slider.setRange(
+            round(LOCALITY_RANGE[0] * _LOCALITY_STEPS), round(LOCALITY_RANGE[1] * _LOCALITY_STEPS)
+        )
+        self._locality_slider.setValue(0)
+        self._locality_slider.setFixedWidth(140)
+        self._locality_slider.setToolTip(locality_tooltip)
+        look_layout.addWidget(self._locality_slider)
+        self._locality_value = QLabel()
+        self._locality_value.setObjectName("adjustValue")
+        self._locality_value.setMinimumWidth(40)
+        look_layout.addWidget(self._locality_value)
+        self._refresh_locality_label()
+
         # What the look method reads in the reference (hidden for other methods).
         # The menu is popped up by hand, like the import menu (Qt font warning).
         self._focus_btn = QPushButton("Référence ▾")  # the history does not exist yet
@@ -363,7 +393,7 @@ class MainWindow(QMainWindow):
             self._size_combo.setCurrentIndex(default_idx)
         controls_layout.addWidget(self._size_combo)
 
-        # Colour space the exported .cube is made for (the preview stays sRGB)
+        # Colour space the exported .cube is made for; the preview applies it there too
         space_label = QLabel("Espace du .cube :")
         space_label.setObjectName("controlLabel")
         controls_layout.addWidget(space_label)
@@ -375,8 +405,8 @@ class MainWindow(QMainWindow):
             "L'espace couleur dans lequel le .cube sera appliqué : le même que celui\n"
             "choisi dans ton logiciel (fenêtre de profil de Camera Raw / Lightroom,\n"
             "espace de la timeline dans Resolve).\n"
-            "L'aperçu reste en sRGB : un espace plus large garde des couleurs vives\n"
-            "que ton écran sRGB et cet aperçu ne montrent pas."
+            "L'aperçu applique la LUT dans cet espace, puis l'affiche en sRGB : un\n"
+            "espace plus large garde des couleurs vives que l'écran ne montre pas toutes."
         )
         space_label.setToolTip(space_tooltip)
         self._space_combo.setToolTip(space_tooltip)
@@ -572,6 +602,7 @@ class MainWindow(QMainWindow):
         # Algorithm or LUT size changed → the previewed grid changes too
         self._algo_combo.currentIndexChanged.connect(self._on_algo_changed)
         self._size_combo.currentIndexChanged.connect(self._on_size_changed)
+        self._space_combo.currentIndexChanged.connect(self._on_size_changed)
 
         # Slider moved (debounced by the panel) → rebuild the grid
         self._adjustments.params_changed.connect(self._on_params_changed)
@@ -585,6 +616,7 @@ class MainWindow(QMainWindow):
         self._zone_count_spin.valueChanged.connect(self._on_zone_count_changed)
         self._tau_slider.valueChanged.connect(self._on_tau_changed)
         self._separation_slider.valueChanged.connect(self._on_separation_changed)
+        self._locality_slider.valueChanged.connect(self._on_locality_changed)
         self._look_pack_action.triggered.connect(self._on_prepare_look_pack)
         self._look_paste_action.triggered.connect(self._on_paste_recipe)
         self._look_open_action.triggered.connect(self._on_open_recipe)
@@ -727,8 +759,10 @@ class MainWindow(QMainWindow):
                 lut_size,
                 self._adjustments.params(),
                 self._history.current.finishing,
+                self._cube_space(),
             )
-            graded = apply_lut_full(source, result.grid, lut_size)
+            pixels, pixel_space = source_pixels(source)
+            graded = render_lut(pixels, pixel_space, result.grid, lut_size, self._cube_space())
             options = [cv2.IMWRITE_JPEG_QUALITY, 95] if target.suffix.lower() in _JPEG else []
             ok, data = cv2.imencode(
                 target.suffix.lower(), cv2.cvtColor(graded, cv2.COLOR_RGB2BGR), options
@@ -841,7 +875,7 @@ class MainWindow(QMainWindow):
     def _on_prepare_look_pack(self) -> None:
         """Write the look pack (with the current render) and copy its prompt."""
         source, reference = self._source_zone.image_rgb, self._reference_zone.image_rgb
-        render = self._preview.image_rgb
+        render = self._last_render if self._preview.image_rgb is not None else None
         cache = self._model_cache
         model = None if cache is None else self._effective_model(cache[3])
         palette = self._reference_zones()
@@ -880,6 +914,7 @@ class MainWindow(QMainWindow):
                 state.separation,
                 model.protect_vivid,
                 state.focus,
+                state.locality,
             )
         except OSError as exc:
             QMessageBox.critical(self, "Pack non créé", f"Impossible d'écrire le pack :\n{exc}")
@@ -1098,6 +1133,7 @@ class MainWindow(QMainWindow):
             protect_vivid=(
                 current.protect_vivid if recipe.protect_vivid is None else recipe.protect_vivid
             ),
+            locality=current.locality if recipe.locality is None else recipe.locality,
             focus=focus,
         )
         if self._history.push(state):
@@ -1124,6 +1160,7 @@ class MainWindow(QMainWindow):
             self._look_analysis_id(),
             name=Path(path).stem,
             finishing=state.finishing,
+            locality=state.locality,
         )
         try:
             Path(path).write_text(dump_recipe(data), encoding="utf-8")
@@ -1340,6 +1377,13 @@ class MainWindow(QMainWindow):
             self._edit_timer.start()
         self._update_undo_buttons()
 
+    def _on_locality_changed(self, _value: int) -> None:
+        self._refresh_locality_label()
+        state = replace(self._history.current, locality=self._locality())
+        if self._history.push(state, "locality"):
+            self._edit_timer.start()
+        self._update_undo_buttons()
+
     def undo(self) -> None:
         """Undo the last correspondence or slider change."""
         state = self._history.undo()
@@ -1365,6 +1409,10 @@ class MainWindow(QMainWindow):
         self._separation_slider.setValue(round(state.separation * _SEPARATION_STEPS))
         self._separation_slider.blockSignals(False)
         self._refresh_separation_label()
+        self._locality_slider.blockSignals(True)
+        self._locality_slider.setValue(round(state.locality * _LOCALITY_STEPS))
+        self._locality_slider.blockSignals(False)
+        self._refresh_locality_label()
         self._refresh_focus_button()
         self._show_editor_state()
         self._update_undo_buttons()
@@ -1464,7 +1512,9 @@ class MainWindow(QMainWindow):
         """*model* with the user's correspondences and separation settings."""
         state = self._history.current
         if isinstance(model, LookTransferModel):
-            return _prepare_model(state.tau, state.separation, state.protect_vivid, model)
+            return _prepare_model(
+                state.tau, state.separation, state.protect_vivid, state.locality, model
+            )
         if not isinstance(model, ZoneTransferModel):
             return model
         table = state.table
@@ -1569,6 +1619,12 @@ class MainWindow(QMainWindow):
     def _refresh_separation_label(self) -> None:
         self._separation_value.setText(f"{self._separation():.2f}")
 
+    def _locality(self) -> float:
+        return self._locality_slider.value() / _LOCALITY_STEPS
+
+    def _refresh_locality_label(self) -> None:
+        self._locality_value.setText(f"{round(self._locality() * 100)} %")
+
     def _update_zone_panel_visibility(self) -> None:
         self._corr_group.setVisible(self._current_method == "zones")
         is_look = self._current_method == "look"
@@ -1576,6 +1632,9 @@ class MainWindow(QMainWindow):
             self._separation_label,
             self._separation_slider,
             self._separation_value,
+            self._locality_label,
+            self._locality_slider,
+            self._locality_value,
             self._focus_btn,
             self._look_recipe_btn,
         ):
@@ -1638,8 +1697,10 @@ class MainWindow(QMainWindow):
                 self._history.current.tau,
                 self._history.current.separation,
                 self._history.current.protect_vivid,
+                self._history.current.locality,
             ),
             reference_weights=self._reference_weights(),
+            space=self._cube_space(),
         )
         self._transfer_worker.progress.connect(self._on_transfer_progress)
         self._transfer_worker.model_ready.connect(self._on_model_ready)
@@ -1706,6 +1767,7 @@ class MainWindow(QMainWindow):
         self._progress_bar.setValue(pct)
 
     def _on_transfer_result(self, result: NDArray[np.uint8]) -> None:
+        self._last_render = result  # as emitted: may carry its unclipped colours
         self._preview.set_image(result)
         self._progress_bar.setValue(100)
         grid_result = self._last_grid_result
@@ -1834,12 +1896,16 @@ class MainWindow(QMainWindow):
 
 
 def _prepare_model(
-    tau: float, separation: float, protect_vivid: float | None, model: TransferModel
+    tau: float,
+    separation: float,
+    protect_vivid: float | None,
+    locality: float,
+    model: TransferModel,
 ) -> TransferModel:
     """Apply the user's separation settings to a freshly fitted model."""
     if isinstance(model, ZoneTransferModel):
         return model.with_params(ZoneBakeParams(tau=tau))
     if isinstance(model, LookTransferModel):
-        model = model.with_separation(separation)
+        model = model.with_separation(separation).with_locality(locality)
         return model if protect_vivid is None else model.with_protect_vivid(protect_vivid)
     return model

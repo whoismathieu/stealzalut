@@ -32,7 +32,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from stealzalut.core.color_transfer import TransferModel
-from stealzalut.core.colorspace import gamut_compress, oklab_to_oklch, oklab_to_srgb, srgb_to_oklab
+from stealzalut.core.colorspace import gamut_compress, oklab_to_oklch
 from stealzalut.core.finishing import Finishing, apply_finishing
 from stealzalut.core.lut_engine import generate_neutral_grid
 from stealzalut.core.regularize import fold_fraction, smooth_field
@@ -161,8 +161,8 @@ def build_grid(
 ) -> GridResult:
     """Bake *model* onto a *size*³ grid with the user's adjustments.
 
-    With default :class:`GradingParams` the grid is exactly ``model.bake(size)``
-    for plain transfers.  Blended transfers (zones) always go through the
+    With default :class:`GradingParams` the sRGB grid equals ``model.bake(size)``
+    for plain transfers (to rounding).  Blended transfers (zones) always go through the
     fold check, using their :meth:`~TransferModel.fold_reference` as baseline.
 
     Args:
@@ -179,55 +179,16 @@ def build_grid(
         The grid and its diagnostics.
     """
     params = params or GradingParams()
-    base = generate_neutral_grid(size)
-    if space is not SRGB:
-        return _build_grid_in_space(model, size, params, finishing, space, base)
-    raw = model.apply(base)
-    lab_raw = srgb_to_oklab(raw)
-
-    baseline = model.fold_reference()
-    if baseline is model:
-        raw_folds = fold_fraction(lab_raw[:, 0], size)
-        if params.is_passthrough and (finishing is None or finishing.is_identity):
-            return GridResult(raw, raw_folds, 0.0, auto_smoothed=False)
-    else:
-        raw_folds = fold_fraction(srgb_to_oklab(baseline.apply(base))[:, 0], size)
-
-    lab_in = srgb_to_oklab(base)
-    delta = adjust_displacement(lab_in, lab_raw, params)
-
-    smoothing = params.smoothing
-    auto = False
-    for attempt in range(AUTO_SMOOTHING_STEPS + 1):
-        lab_out = lab_in + smooth_field(delta, size, _sigma_cells(smoothing, size))
-        folds = fold_fraction(lab_out[:, 0], size)
-        if folds <= raw_folds + MAX_EXTRA_FOLDS or attempt == AUTO_SMOOTHING_STEPS:
-            break
-        smoothing = max(smoothing * 2.0, AUTO_SMOOTHING_START)
-        auto = True
-
-    if finishing is not None and not finishing.is_identity:
-        lab_out = apply_finishing(lab_out, finishing)
-        folds = fold_fraction(lab_out[:, 0], size)
-
-    grid = oklab_to_srgb(gamut_compress(lab_out))
-    return GridResult(grid, folds, smoothing, auto_smoothed=auto)
-
-
-def _build_grid_in_space(
-    model: TransferModel,
-    size: int,
-    params: GradingParams,
-    finishing: Finishing | None,
-    space: RGBSpace,
-    base: F64,
-) -> GridResult:
-    """:func:`build_grid` for a space other than sRGB (same steps, in Oklab)."""
-    lab_in = space.to_oklab(base)
+    lab_in = space.to_oklab(generate_neutral_grid(size))
+    # One sequence for every space: the model moves Oklab colours, the
+    # adjustments and the fold control act on that displacement, and the
+    # gamut of *space* is enforced once, at the very end.
     lab_raw = model.apply_lab(lab_in)
     baseline = model.fold_reference()
     reference_l = lab_raw[:, 0] if baseline is model else baseline.apply_lab(lab_in)[:, 0]
     raw_folds = fold_fraction(reference_l, size)
+    if baseline is model and params.is_passthrough and (finishing is None or finishing.is_identity):
+        return GridResult(_encode(lab_raw, space), raw_folds, 0.0, auto_smoothed=False)
 
     delta = adjust_displacement(lab_in, lab_raw, params)
     smoothing = params.smoothing
@@ -244,5 +205,9 @@ def _build_grid_in_space(
         lab_out = apply_finishing(lab_out, finishing)
         folds = fold_fraction(lab_out[:, 0], size)
 
-    grid = space.from_oklab(gamut_compress(lab_out, to_linear=space.oklab_to_linear))
-    return GridResult(grid, folds, smoothing, auto_smoothed=auto)
+    return GridResult(_encode(lab_out, space), folds, smoothing, auto_smoothed=auto)
+
+
+def _encode(lab: F64, space: RGBSpace) -> F64:
+    """Oklab colours as values of *space*, chroma reduced where its gamut is exceeded."""
+    return space.from_oklab(gamut_compress(lab, to_linear=space.oklab_to_linear))

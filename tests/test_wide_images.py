@@ -186,3 +186,28 @@ def test_plain_arrays_behave_as_before() -> None:
     a = fit_look(source, reference)
     b = fit_look(WideImage(source), WideImage(reference))
     assert np.array_equal(a.field, b.field) and np.array_equal(a.cast, b.cast)
+
+
+@pytest.mark.parametrize(
+    ("description", "expected"),
+    [
+        ("Display P3", "display-p3"),
+        ("DISPLAY P3", "display-p3"),
+        ("DCI-P3 D65", "display-p3"),
+        ("Adobe RGB (1998)", "adobe-rgb"),
+        ("AdobeRGB1998", "adobe-rgb"),
+        ("adobe wide", "adobe-rgb"),
+        ("ClayRGB1998", "adobe-rgb"),
+        ("opRGB", "adobe-rgb"),
+        ("Nikon Adobe RGB 4.0.0.3001", "adobe-rgb"),
+        ("Apple Display P3", "display-p3"),
+        ("ProPhoto RGB", "prophoto"),
+        ("ROMM RGB: ISO 22028-2:2013", "prophoto"),
+        ("sRGB IEC61966-2.1", None),
+        ("", None),
+        ("Scanner X", None),
+    ],
+)
+def test_profile_names_are_matched_by_substring(description: str, expected: str | None) -> None:
+    space = image_io._known_space(description)
+    assert (None if space is None else space.key) == expected

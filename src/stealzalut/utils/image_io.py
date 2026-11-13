@@ -80,26 +80,41 @@ class WideImage(np.ndarray[Any, np.dtype[np.uint8]]):
             ``None`` when the file is plain sRGB.  Arrays derived from this
             one (slices, reshapes, thumbnails) do **not** inherit it.
         source_space: Name of the colour space the file was in.
+        native: The same picture, same shape, as the file encodes it: RGB
+            uint8 **in the file's own space** (``native_space``), or
+            ``None`` when the file is plain sRGB.  A LUT is applied to
+            these, so that colours sRGB cannot hold enter it intact; sRGB
+            8 bits is only made afterwards, for the screen or a file.
+        native_space: The :class:`~stealzalut.core.rgb_spaces.RGBSpace` of
+            ``native`` (``None`` without ``native``).
     """
 
     analysis_lab: NDArray[np.float64] | None
     source_space: str
+    native: NDArray[np.uint8] | None
+    native_space: Any
 
     def __new__(
         cls,
         srgb: NDArray[np.uint8],
         analysis_lab: NDArray[np.float64] | None = None,
         source_space: str = "sRGB",
+        native: NDArray[np.uint8] | None = None,
+        native_space: Any = None,
     ) -> WideImage:
         obj = np.asarray(srgb, dtype=np.uint8).view(cls)
         obj.analysis_lab = analysis_lab
         obj.source_space = source_space
+        obj.native = native
+        obj.native_space = native_space if native is not None else None
         return obj
 
     def __array_finalize__(self, obj: Any) -> None:
         # A view or a copy is another set of pixels: the analysis no longer fits
         self.analysis_lab = None
         self.source_space = "sRGB"
+        self.native = None
+        self.native_space = None
 
 
 def _profile_description(img: Any) -> str:
@@ -119,12 +134,17 @@ def _profile_description(img: Any) -> str:
 
 
 def _known_space(description: str) -> Any:
-    """The RGB space a profile description names, or ``None`` if not a known wide one."""
+    """The RGB space a profile description names, or ``None`` if not a known wide one.
+
+    Profiles of the same space go by many names ("Display P3", "DCI-P3 D65",
+    "AdobeRGB1998", "ROMM RGB"…): the match is a case-insensitive substring.
+    """
+    description = description.lower()
     from stealzalut.core.rgb_spaces import ADOBE_RGB, DISPLAY_P3, PROPHOTO_RGB
 
     if "p3" in description:
         return DISPLAY_P3
-    if "adobe rgb" in description or "adobergb" in description:
+    if any(name in description for name in ("adobe", "clayrgb", "oprgb")):
         return ADOBE_RGB
     if "prophoto" in description or "romm" in description:
         return PROPHOTO_RGB
@@ -153,8 +173,8 @@ def _open_for_analysis(path: Path) -> Any:
     return Image.open(path)
 
 
-def _wide_analysis(path: Path, shape: tuple[int, int]) -> tuple[NDArray[np.float64], str] | None:
-    """Unclipped Oklab analysis copy of *path*, ``(h, w, 3)`` with *shape* = ``(h, w)``.
+def _native_pixels(path: Path) -> tuple[NDArray[np.uint8], Any] | None:
+    """The picture as its file encodes it: RGB uint8 in its own space, and that space.
 
     ``None`` when the file is sRGB, has no profile, or names a space the
     application does not know: the sRGB picture is then all there is.
@@ -169,15 +189,20 @@ def _wide_analysis(path: Path, shape: tuple[int, int]) -> tuple[NDArray[np.float
             space = _known_space(_profile_description(img))
             if space is None:
                 return None
-            if img.format == "JPEG":
-                img.draft("RGB", (4 * shape[1], 4 * shape[0]))  # decode at reduced size
             pixels = np.array(ImageOps.exif_transpose(img).convert("RGB"), dtype=np.uint8)
-        small = cv2.resize(pixels, (shape[1], shape[0]), interpolation=cv2.INTER_AREA)
-        lab = space.to_oklab(small.reshape(-1, 3).astype(np.float64) / 255.0)
-        return lab.reshape(shape[0], shape[1], 3), str(space.label)
+        return pixels, space
     except Exception as exc:
-        logger.debug("Wide-gamut analysis of %s skipped: %s", path, exc)
+        logger.debug("Native pixels of %s skipped: %s", path, exc)
         return None
+
+
+def _analysis_of(
+    pixels: NDArray[np.uint8], space: Any, shape: tuple[int, int]
+) -> NDArray[np.float64]:
+    """Unclipped Oklab analysis copy ``(h, w, 3)`` of *pixels* in *space*."""
+    small = cv2.resize(pixels, (shape[1], shape[0]), interpolation=cv2.INTER_AREA)
+    lab = space.to_oklab(small.reshape(-1, 3).astype(np.float64) / 255.0)
+    return cast("NDArray[np.float64]", lab.reshape(shape[0], shape[1], 3))
 
 
 def load_image_rgb(path: str | Path, auto_develop_raw: bool = True) -> WideImage:
@@ -185,15 +210,21 @@ def load_image_rgb(path: str | Path, auto_develop_raw: bool = True) -> WideImage
 
     Same files and errors as :func:`load_image_bgr`.  When the file is in a
     wider space than sRGB (Display P3, Adobe RGB, ProPhoto), the result
-    carries ``analysis_lab``; see :class:`WideImage`.
+    carries ``analysis_lab`` and ``native``; see :class:`WideImage`.
     """
     path = Path(path)
     rgb = bgr_to_rgb(load_image_bgr(path, auto_develop_raw=auto_develop_raw))
     small_shape = create_thumbnail(rgb, WIDE_ANALYSIS_SIZE).shape[:2]
-    wide = _wide_analysis(path, (int(small_shape[0]), int(small_shape[1])))
-    if wide is None:
+    found = _native_pixels(path)
+    if found is None:
         return WideImage(rgb)
-    return WideImage(rgb, wide[0], wide[1])
+    native, space = found
+    analysis = _analysis_of(native, space, (int(small_shape[0]), int(small_shape[1])))
+    if native.shape != rgb.shape:
+        # Not the picture that is displayed (a RAW file developed here rather
+        # than read from its preview): its colours still inform the engine.
+        return WideImage(rgb, analysis, str(space.label))
+    return WideImage(rgb, analysis, str(space.label), native, space)
 
 
 # ── Colour management ────────────────────────────────────────────────────────

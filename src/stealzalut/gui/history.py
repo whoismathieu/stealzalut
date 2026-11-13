@@ -42,6 +42,8 @@ class EditState:
     focus: tuple[tuple[int, float], ...] = ()
     #: Protection of vivid colours in the look method; ``None`` = the model's own.
     protect_vivid: float | None = None
+    #: Locality of the look method (0 = follow the reference all the way).
+    locality: float = 0.0
 
 
 class History:

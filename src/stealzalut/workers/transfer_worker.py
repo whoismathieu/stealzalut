@@ -1,10 +1,11 @@
 """QThread worker for colour transfer preview computation.
 
 Builds the same 3D LUT grid that the export would produce (transfer model
-+ user adjustments) and applies it to a down-scaled copy of the source
-image, so the preview shows exactly what the exported ``.cube`` file will
-do.  A previously fitted model can be passed in: moving a slider then only
-rebuilds the grid, which takes a fraction of a second.  Runs in a background thread so
++ user adjustments, in the colour space chosen for the ``.cube``) and
+applies it to a down-scaled copy of the source image, so the preview shows
+exactly what the exported ``.cube`` file will do.  A previously fitted model
+can be passed in: moving a slider then only rebuilds the grid, which takes a
+fraction of a second.  Runs in a background thread so
 the GUI remains responsive; communicates exclusively via Qt Signals.
 """
 
@@ -22,9 +23,10 @@ from PySide6.QtCore import QThread, Signal
 from stealzalut.core.color_transfer import ColorTransferEngine, TransferModel
 from stealzalut.core.finishing import Finishing
 from stealzalut.core.grading import GradingParams, build_grid
-from stealzalut.core.lut_apply import apply_lut
+from stealzalut.core.lut_apply import render_lut, render_lut_lab, source_pixels
 from stealzalut.core.palette import DEFAULT_ZONE_COUNT
-from stealzalut.utils.image_io import create_thumbnail
+from stealzalut.core.rgb_spaces import SRGB, RGBSpace
+from stealzalut.utils.image_io import WIDE_ANALYSIS_SIZE, WideImage
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +44,9 @@ class TransferWorker(QThread):
             the raw fit; *prepare* (if given) is applied after this signal,
             before baking (e.g. the zone separation chosen by the user).
         grid_ready (object): The :class:`GridResult` (grid + diagnostics).
-        result_ready (object): The graded RGB uint8 preview image (ndarray).
+        result_ready (object): The graded preview, RGB sRGB uint8 (a
+            ``WideImage`` carrying its unclipped colours when the source or the
+            cube space is wider than sRGB).
         error (str): Human-readable error message if the computation fails.
 
     Usage::
@@ -72,6 +76,7 @@ class TransferWorker(QThread):
         zone_count: int = DEFAULT_ZONE_COUNT,
         prepare: Callable[[TransferModel], TransferModel] | None = None,
         reference_weights: NDArray[np.float64] | None = None,
+        space: RGBSpace = SRGB,
         parent: Any = None,
     ) -> None:
         super().__init__(parent)
@@ -86,6 +91,7 @@ class TransferWorker(QThread):
         self._zone_count = zone_count
         self._prepare = prepare
         self._reference_weights = reference_weights
+        self._space = space
         self._engine = ColorTransferEngine(method=method)
 
     def run(self) -> None:
@@ -108,12 +114,28 @@ class TransferWorker(QThread):
                     model = self._prepare(model)
             self.progress.emit(60)
 
-            grid_result = build_grid(model, self._lut_size, self._params, self._finishing)
+            grid_result = build_grid(
+                model, self._lut_size, self._params, self._finishing, self._space
+            )
             self.grid_ready.emit(grid_result)
             self.progress.emit(75)
 
-            preview_src = create_thumbnail(self._source, max_size=self._render_max_size)
-            result = apply_lut(preview_src, grid_result.grid, self._lut_size)
+            # The source enters the LUT in its own colours, not their sRGB clipping
+            pixels, pixel_space = source_pixels(self._source, self._render_max_size)
+            result = render_lut(
+                pixels, pixel_space, grid_result.grid, self._lut_size, self._space
+            )
+            if pixel_space is not SRGB or self._space is not SRGB:
+                # The render may hold colours its sRGB rendition cannot: keep
+                # them for whoever measures it (the AI pack)
+                small, _ = source_pixels(self._source, WIDE_ANALYSIS_SIZE)
+                result = WideImage(
+                    result,
+                    render_lut_lab(
+                        small, pixel_space, grid_result.grid, self._lut_size, self._space
+                    ),
+                    self._space.label,
+                )
             self.progress.emit(95)
 
             logger.info("TransferWorker completed — result %s", result.shape)

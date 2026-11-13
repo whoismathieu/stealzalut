@@ -143,3 +143,10 @@ def test_look_pack_contains_the_render(
 
     with zipfile.ZipFile(tmp_path / "s_x_r_stealzalut_look_pack.zip") as archive:
         assert sorted(archive.namelist()) == sorted(LOOK_PACK_FILES)
+
+
+def test_look_prompt_explains_the_locality(reference: U8, render: U8, palette: ZonePalette) -> None:
+    gaps = look_gaps(render, reference)
+    prompt = build_look_prompt(palette, "abcd1234", 1.0, 0.0, (), gaps, 0.35)
+    assert "`look.locality` (0 à 1 ; actuellement 0.35)" in prompt
+    assert "actuellement 0)" in build_look_prompt(palette, "abcd1234", 1.0, 0.5, (), gaps)

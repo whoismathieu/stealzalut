@@ -1,7 +1,9 @@
 """Drag-and-drop image widget.
 
-Displays a placeholder label when empty, or a scaled thumbnail when
-an image has been loaded (via drag-and-drop or file dialog).  The path of
+Displays a placeholder label when empty, or the image fitted to the zone
+when one has been loaded (via drag-and-drop or file dialog); the image can
+be zoomed and panned (see
+:class:`~stealzalut.gui.widgets.image_view.ImageView`).  The path of
 the loaded file is shown at the bottom-left of the zone, selectable and
 copyable (Ctrl+C or the copy button).
 """
@@ -19,22 +21,18 @@ from PySide6.QtGui import (
     QDragEnterEvent,
     QDropEvent,
     QGuiApplication,
-    QImage,
-    QMouseEvent,
-    QPixmap,
 )
 from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
-    QLabel,
     QLineEdit,
-    QSizePolicy,
     QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 from stealzalut.gui.overlay import highlight_zone
+from stealzalut.gui.widgets.image_view import ImageView
 from stealzalut.utils.image_io import (
     SUPPORTED_EXTENSIONS,
     create_thumbnail,
@@ -47,6 +45,10 @@ logger = logging.getLogger(__name__)
 _COPY_LABEL = "Copier"
 _COPIED_LABEL = "Copié ✓"
 _COPIED_FEEDBACK_MS = 1500
+
+#: Longest edge of the copy on display: the size the preview is rendered at,
+#: so that both stay sharp when zoomed.
+DISPLAY_MAX_SIZE = 1280
 
 _RAW_FILTER_EXTS = (
     "*.cr2 *.cr3 *.nef *.arw *.raf *.rw2 *.orf *.pef *.dng *.raw "
@@ -71,7 +73,8 @@ class ImageDropZone(QWidget):
         image_cleared: Emitted when the image is removed.
 
     The widget stores the **full-resolution RGB image** internally and
-    only displays a down-scaled thumbnail.
+    only displays a down-scaled copy.  A click that is not a drag opens the
+    file dialog.
     """
 
     image_loaded = Signal(object)
@@ -98,15 +101,10 @@ class ImageDropZone(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        self._label = QLabel(label_text)
-        self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._label.setWordWrap(True)
-        self._label.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Expanding,
-        )
-        self._label.setMinimumSize(260, 200)
+        self._label = ImageView(label_text)
+        self._label.setMinimumSize(200, 160)
         self._label.setObjectName("dropZoneLabel")
+        self._label.clicked.connect(self._open_file_dialog)
         layout.addWidget(self._label)
 
         # Path row (bottom-left): read-only field + copy button, hidden when empty
@@ -160,6 +158,11 @@ class ImageDropZone(QWidget):
         return self._path_field.text()
 
     @property
+    def view(self) -> ImageView:
+        """The zoomable display of the image."""
+        return self._label
+
+    @property
     def has_image(self) -> bool:
         """Whether an image is currently loaded."""
         return self._image_rgb is not None
@@ -169,8 +172,7 @@ class ImageDropZone(QWidget):
         self._image_rgb = None
         self._image_path = None
         self._thumb_rgb = None
-        self._label.setPixmap(QPixmap())
-        self._label.setText(self._label_text)
+        self._label.set_rgb(None)
         self._set_path_display(None)
         self.image_cleared.emit()
 
@@ -227,11 +229,6 @@ class ImageDropZone(QWidget):
 
     # ── Click to browse ──────────────────────────────────────────────────
 
-    def mousePressEvent(self, event: QMouseEvent) -> None:
-        if event.button() == Qt.MouseButton.LeftButton:
-            self._open_file_dialog()
-        super().mousePressEvent(event)
-
     def _open_file_dialog(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self,
@@ -272,14 +269,11 @@ class ImageDropZone(QWidget):
 
     def _update_thumbnail(self, bgr_image: NDArray[np.uint8]) -> None:
         """Generate and display a thumbnail from the BGR image."""
-        thumb = create_thumbnail(bgr_image, self._max_preview)
+        thumb = create_thumbnail(bgr_image, max(self._max_preview, DISPLAY_MAX_SIZE))
         rgb: NDArray[np.uint8] = np.ascontiguousarray(thumb[..., ::-1])  # BGR → RGB
         self._thumb_rgb = rgb
         self._show_rgb(rgb)
 
     def _show_rgb(self, rgb: NDArray[np.uint8]) -> None:
-        h, w, ch = rgb.shape
-        qt_image = QImage(rgb.data.tobytes(), w, h, ch * w, QImage.Format.Format_RGB888)
-        self._label.setText("")
-        self._label.setPixmap(QPixmap.fromImage(qt_image))
+        self._label.set_rgb(rgb)
 

@@ -67,7 +67,8 @@ src/stealzalut/
 │   ├── zone_text.py            # French labels for intents, origins and dominant colours
 │   ├── styles/theme.qss        # Dark Qt theme (font sizes in px)
 │   └── widgets/                # image_drop_zone, preview_panel, correspondence_view, zone_inspector,
-│                               # adjustments_panel, finishing_panel, paste_recipe_dialog
+│                               # adjustments_panel, finishing_panel, paste_recipe_dialog,
+│                               # image_view (zoom and pan), responsive (wrapping toolbars, folding sections)
 ├── utils/
 │   ├── image_io.py             # WideImage, native ICC decoding, RAW/DNG (embedded preview / rawpy), HEIC
 │   └── paths.py                # Path resolution compatible with PyInstaller (sys._MEIPASS)
@@ -223,3 +224,5 @@ Measured on 25 neutral photographs, 33³ LUT in Display P3. Each cell gives the 
 4. **The local `.env` file takes precedence.** `load_settings()` loads `.env`, which overrides the default in the code (`COLOR_TRANSFER_METHOD`). Interface tests that depend on a given algorithm must select it explicitly.
 5. **Lifetime of `QThread` objects (`MainWindow._retire_transfer_worker`).** A `TransferWorker` replaced by a new request while it is running must never be destroyed by Python's garbage collector before it finishes (fatal Qt crash). Its signals are disconnected and a reference is kept in `_stale_transfer_workers` until the `finished` signal.
 6. **A dark colour holds little chroma.** At L ≈ 0.25 a display shows a chroma of about 0.06 on skin hues. A saturation or warmth retouch on a dark zone is computed in full by the engine and then reduced by the final gamut compression: lift the zone first (`keep_tone`, `exposure`) to give its colour room.
+7. **The window is narrower than its toolbars.** `MainWindow.setMinimumSize(900, 680)` is explicit, so Qt lets the window shrink under what its layouts ask for and squeezes the controls onto each other instead. Each toolbar is therefore a `ResponsiveRow` (`gui/widgets/responsive.py`) that puts its two groups on two rows under the width it needs, the combo boxes are allowed to shrink (`_make_flexible`; `theme.qss` gives every `QComboBox` a `min-width` that has to be lowered per object name), and the bottom panels sit in scroll areas. `tests/test_window_layout.py` checks that no control overlaps another from 900 to 1600 px and that the controls row stays on one line at 1280 px.
+8. **Images are painted by `ImageView`, not by `QLabel.setPixmap`.** Source, reference and preview zoom with the wheel (1× to 16×, around the pointer), pan with a drag and come back with a right click; source and preview are kept on the same area. A refreshed image of the same size keeps the view, so moving a slider does not lose the zoom. The drop zones display a 1280 px copy, the size the preview is rendered at (`PREVIEW_RENDER_MAX_SIZE`). On a drop zone a click opens the file dialog only when it was not a drag.

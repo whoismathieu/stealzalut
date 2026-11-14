@@ -93,8 +93,28 @@ QGroupBox::title {
 /* ── Splitter ──────────────────────────────────────────────────────────────── */
 QSplitter::handle {
     background-color: #2e3238;
-    width: 2px;
-    height: 2px;
+    width: 4px;
+    height: 4px;
+}
+
+/* Short entries: these two give way before the toolbar wraps */
+#lutSizeCombo, #cubeSpaceCombo {
+    min-width: 60px;
+}
+
+/* ── Fold / unfold arrow of a section ──────────────────────────────────────── */
+#collapseButton {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    color: #c0c6d0;
+    font-size: 16px;
+    padding: 2px 6px;
+}
+
+#collapseButton:hover {
+    border-color: #4f80ff;
+    color: #e0e2e6;
 }
 
 QSplitter::handle:hover {
@@ -269,7 +289,7 @@ QStatusBar {
     border-radius: 6px;
 }
 
-#correspondenceScroll, #inspectorScroll {
+#correspondenceScroll, #inspectorScroll, #panelScroll, #panelScroll > QWidget > QWidget {
     background-color: transparent;
 }
 

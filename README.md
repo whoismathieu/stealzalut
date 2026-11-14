@@ -45,6 +45,7 @@ To avoid the "monochrome filter" effect and the crushed highlights typical of gl
 
 - **Global adjustments**: luminance strength, colour strength, neutral protection, skin protection (an Oklch window with full weight on hues 37.5°–77.5°, which never blocks `L`), vivid colour protection, 3D smoothing and mix.
 - **Finishing panel**: 3 colour wheels (shadows, midtones, highlights, weighted by Bernstein polynomials on `L`), a monotone cubic tone curve on `L`, 8 Gaussian HSL hue bands, saturation and vibrance.
+- **Window**: the three images (source, reference, preview) zoom with the mouse wheel, move with a drag and come back to the whole picture with a right click; source and preview stay on the same area. The Zones section and the Ajustements / Finition tabs fold down to their header with the ▾ arrow and are resized by dragging the separators. The toolbars wrap on two rows when the window is narrow.
 
 ### Offline AI bridge and `.szl` recipes (v2)
 

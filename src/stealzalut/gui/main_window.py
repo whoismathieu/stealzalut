@@ -41,9 +41,11 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSlider,
     QSpinBox,
     QSplitter,
+    QStackedWidget,
     QStatusBar,
     QTabWidget,
     QToolButton,
@@ -107,6 +109,7 @@ from stealzalut.gui.widgets.finishing_panel import FinishingPanel
 from stealzalut.gui.widgets.image_drop_zone import ImageDropZone
 from stealzalut.gui.widgets.paste_recipe_dialog import PasteRecipeDialog
 from stealzalut.gui.widgets.preview_panel import PreviewPanel
+from stealzalut.gui.widgets.responsive import ResponsiveRow, SplitterSection, collapse_button
 from stealzalut.gui.widgets.zone_inspector import ZoneInspector
 from stealzalut.gui.zone_text import dominant_colour_name, pct
 from stealzalut.utils.image_io import RAW_EXTENSIONS
@@ -129,6 +132,27 @@ _FOCUS_CHOICES: tuple[tuple[str, float], ...] = (
 )
 _IDLE_MESSAGE = "Charge une source et une référence pour voir leurs zones."
 _ANALYSING_MESSAGE = "Analyse des zones de couleur…"
+
+
+def _make_flexible(combo: QComboBox, min_chars: int, max_width: int) -> None:
+    """Let *combo* shrink to *min_chars* characters before the row overflows.
+
+    By default a combo is as wide as its longest entry and never gives way.
+    """
+    combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+    combo.setMinimumContentsLength(min_chars)
+    combo.setMaximumWidth(max_width)
+    combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+
+def _scrolling(panel: QWidget) -> QScrollArea:
+    """*panel* in a scroll area, so that its section can be made smaller than it."""
+    area = QScrollArea()
+    area.setObjectName("panelScroll")
+    area.setWidgetResizable(True)
+    area.setFrameShape(QFrame.Shape.NoFrame)
+    area.setWidget(panel)
+    return area
 
 
 class MainWindow(QMainWindow):
@@ -257,14 +281,42 @@ class MainWindow(QMainWindow):
         self._bottom_tabs = QTabWidget()
         self._bottom_tabs.setObjectName("bottomTabs")
         self._adjustments = AdjustmentsPanel()
-        self._bottom_tabs.addTab(self._adjustments, "Ajustements")
+        self._bottom_tabs.addTab(_scrolling(self._adjustments), "Ajustements")
         self._finishing_panel = FinishingPanel()
-        self._bottom_tabs.addTab(self._finishing_panel, "Finition")
+        self._bottom_tabs.addTab(_scrolling(self._finishing_panel), "Finition")
         self._bottom_tabs.setTabToolTip(
             1, "Roues couleur, courbe de luminosité, réglages par couleur (après le transfert)"
         )
         self._main_splitter.addWidget(self._bottom_tabs)
         self._main_splitter.setSizes([300, 360, 250])
+
+        # Each section under the images folds down to its header
+        self._corr_section = SplitterSection(
+            self._main_splitter,
+            self._corr_group,
+            self._corr_body,
+            self._corr_collapse_btn,
+            self._corr_header_height,
+        )
+        self._tabs_collapse_btn = collapse_button(
+            "Replier ou déplier les ajustements et la finition"
+        )
+        self._bottom_tabs.setCornerWidget(self._tabs_collapse_btn, Qt.Corner.TopRightCorner)
+        tab_pages = self._bottom_tabs.findChild(QStackedWidget)
+        assert tab_pages is not None
+        self._tabs_section = SplitterSection(
+            self._main_splitter,
+            self._bottom_tabs,
+            tab_pages,
+            self._tabs_collapse_btn,
+            lambda: self._bottom_tabs.tabBar().sizeHint().height(),
+        )
+        # Choosing a tab opens the section it belongs to
+        self._bottom_tabs.tabBarClicked.connect(lambda _: self._tabs_section.set_collapsed(False))
+
+        # Source and preview show the same area when one of them is zoomed
+        self._source_zone.view.view_changed.connect(self._preview.view.set_view)
+        self._preview.view.view_changed.connect(self._source_zone.view.set_view)
         self._mode_hint = self._build_mode_hint()
         root_layout.addWidget(self._mode_hint)
         self._source_hint = self._build_source_hint()
@@ -272,8 +324,10 @@ class MainWindow(QMainWindow):
         root_layout.addWidget(self._main_splitter, stretch=1)
 
         # ── Middle: Controls (Algorithm + LUT size + Export button) ─
-        controls_layout = QHBoxLayout()
-        controls_layout.setSpacing(12)
+        # Selectors on the left, actions on the right; on two rows when narrow
+        self._controls_row = ResponsiveRow(spacing=12)
+        controls_layout = self._controls_row.left
+        actions_layout = self._controls_row.right
         # Settings of the look method, on their own row (the bottom row is full)
         look_layout = QHBoxLayout()
         look_layout.setSpacing(12)
@@ -290,7 +344,8 @@ class MainWindow(QMainWindow):
         default_algo_idx = self._algo_combo.findData(self._settings.color_transfer_method)
         if default_algo_idx >= 0:
             self._algo_combo.setCurrentIndex(default_algo_idx)
-        controls_layout.addWidget(self._algo_combo)
+        _make_flexible(self._algo_combo, min_chars=14, max_width=420)
+        controls_layout.addWidget(self._algo_combo, stretch=200)
 
         # Separation of the look method (hidden for the other methods)
         separation_tooltip = (
@@ -309,7 +364,8 @@ class MainWindow(QMainWindow):
             round(SEPARATION_RANGE[1] * _SEPARATION_STEPS),
         )
         self._separation_slider.setValue(_SEPARATION_STEPS)
-        self._separation_slider.setFixedWidth(140)
+        self._separation_slider.setMinimumWidth(70)
+        self._separation_slider.setMaximumWidth(140)
         self._separation_slider.setToolTip(separation_tooltip)
         look_layout.addWidget(self._separation_slider)
         self._separation_value = QLabel()
@@ -336,7 +392,8 @@ class MainWindow(QMainWindow):
             round(LOCALITY_RANGE[0] * _LOCALITY_STEPS), round(LOCALITY_RANGE[1] * _LOCALITY_STEPS)
         )
         self._locality_slider.setValue(0)
-        self._locality_slider.setFixedWidth(140)
+        self._locality_slider.setMinimumWidth(70)
+        self._locality_slider.setMaximumWidth(140)
         self._locality_slider.setToolTip(locality_tooltip)
         look_layout.addWidget(self._locality_slider)
         self._locality_value = QLabel()
@@ -391,7 +448,8 @@ class MainWindow(QMainWindow):
         default_idx = self._size_combo.findData(self._settings.lut_default_size)
         if default_idx >= 0:
             self._size_combo.setCurrentIndex(default_idx)
-        controls_layout.addWidget(self._size_combo)
+        _make_flexible(self._size_combo, min_chars=4, max_width=190)
+        controls_layout.addWidget(self._size_combo, stretch=100)
 
         # Colour space the exported .cube is made for; the preview applies it there too
         space_label = QLabel("Espace du .cube :")
@@ -410,31 +468,32 @@ class MainWindow(QMainWindow):
         )
         space_label.setToolTip(space_tooltip)
         self._space_combo.setToolTip(space_tooltip)
-        controls_layout.addWidget(self._space_combo)
+        _make_flexible(self._space_combo, min_chars=6, max_width=190)
+        controls_layout.addWidget(self._space_combo, stretch=100)
 
-        controls_layout.addStretch()
+        controls_layout.addStretch(1)
 
         # Undo / redo (correspondences and sliders)
         self._undo_btn = QPushButton("↶ Annuler")
         self._undo_btn.setObjectName("undoButton")
         self._undo_btn.setToolTip("Annuler la dernière modification (Ctrl+Z)")
-        controls_layout.addWidget(self._undo_btn)
+        actions_layout.addWidget(self._undo_btn)
         self._redo_btn = QPushButton("↷ Rétablir")
         self._redo_btn.setObjectName("redoButton")
         self._redo_btn.setToolTip("Rétablir la modification annulée (Ctrl+Y)")
-        controls_layout.addWidget(self._redo_btn)
+        actions_layout.addWidget(self._redo_btn)
 
         # Clear button
         self._clear_btn = QPushButton("Clear All")
         self._clear_btn.setObjectName("clearButton")
-        controls_layout.addWidget(self._clear_btn)
+        actions_layout.addWidget(self._clear_btn)
 
         # Export button (.cube)
         self._export_btn = QPushButton("Export .cube")
         self._export_btn.setObjectName("exportButton")
         self._export_btn.setEnabled(False)
         self._export_btn.setToolTip("Exporter le fichier 3D LUT (.cube)")
-        controls_layout.addWidget(self._export_btn)
+        actions_layout.addWidget(self._export_btn)
 
         self._export_image_btn = QPushButton("Exporter l'image…")
         self._export_image_btn.setObjectName("exportImageButton")
@@ -443,11 +502,11 @@ class MainWindow(QMainWindow):
             "Enregistrer la photo source avec ce rendu, en pleine résolution :\n"
             "exactement ce que montre l'aperçu, sans dépendre d'un autre logiciel."
         )
-        controls_layout.addWidget(self._export_image_btn)
+        actions_layout.addWidget(self._export_image_btn)
 
         look_layout.addStretch()
         root_layout.addLayout(look_layout)
-        root_layout.addLayout(controls_layout)
+        root_layout.addWidget(self._controls_row)
 
         # ── Bottom: Progress bar ─────────────────────────────────────
         self._progress_bar = QProgressBar()
@@ -468,8 +527,11 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(group)
         layout.setSpacing(6)
 
-        toolbar = QHBoxLayout()
-        toolbar.setSpacing(8)
+        self._zones_row = ResponsiveRow(spacing=8)
+        toolbar = self._zones_row.left
+        zone_actions = self._zones_row.right
+        self._corr_collapse_btn = collapse_button("Replier ou déplier les correspondances")
+        toolbar.addWidget(self._corr_collapse_btn)
         zones_label = QLabel("Zones :")
         zones_label.setObjectName("controlLabel")
         toolbar.addWidget(zones_label)
@@ -498,7 +560,8 @@ class MainWindow(QMainWindow):
         self._tau_slider.setObjectName("tauSlider")
         self._tau_slider.setRange(25, 300)
         self._tau_slider.setValue(round(ZoneBakeParams().tau * _TAU_STEPS))
-        self._tau_slider.setFixedWidth(160)
+        self._tau_slider.setMinimumWidth(70)
+        self._tau_slider.setMaximumWidth(160)
         self._tau_slider.setToolTip(tau_tooltip)
         toolbar.addWidget(self._tau_slider)
         self._tau_value = QLabel()
@@ -517,7 +580,7 @@ class MainWindow(QMainWindow):
             "les zones en images, leurs mesures et le prompt à coller.\n"
             "Son conseil revient ensuite par « Importer »."
         )
-        toolbar.addWidget(self._ai_pack_btn)
+        zone_actions.addWidget(self._ai_pack_btn)
 
         self._import_btn = QPushButton("Importer ▾")
         self._import_btn.setObjectName("importRecipeButton")
@@ -532,7 +595,7 @@ class MainWindow(QMainWindow):
                 self._import_btn.mapToGlobal(self._import_btn.rect().bottomLeft())
             )
         )
-        toolbar.addWidget(self._import_btn)
+        zone_actions.addWidget(self._import_btn)
 
         self._export_recipe_btn = QPushButton("Exporter la recette…")
         self._export_recipe_btn.setObjectName("exportRecipeButton")
@@ -540,19 +603,25 @@ class MainWindow(QMainWindow):
             "Enregistre tes correspondances et réglages dans un fichier .szl\n"
             "(pour les reprendre plus tard ou les partager)."
         )
-        toolbar.addWidget(self._export_recipe_btn)
+        zone_actions.addWidget(self._export_recipe_btn)
 
         self._all_auto_btn = QPushButton("Tout remettre en auto")
         self._all_auto_btn.setObjectName("allAutoButton")
         self._all_auto_btn.setToolTip("Revenir à l'appariement automatique pour toutes les zones")
-        toolbar.addWidget(self._all_auto_btn)
-        layout.addLayout(toolbar)
+        zone_actions.addWidget(self._all_auto_btn)
+        layout.addWidget(self._zones_row)
+
+        # Everything under the toolbar disappears when the section is folded
+        self._corr_body = QWidget()
+        body_layout = QVBoxLayout(self._corr_body)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.setSpacing(6)
 
         self._conflict_banner = QLabel()
         self._conflict_banner.setObjectName("conflictBanner")
         self._conflict_banner.setWordWrap(True)
         self._conflict_banner.hide()
-        layout.addWidget(self._conflict_banner)
+        body_layout.addWidget(self._conflict_banner)
 
         body = QHBoxLayout()
         body.setSpacing(8)
@@ -574,8 +643,16 @@ class MainWindow(QMainWindow):
         inspector_scroll.setWidget(self._inspector)
         inspector_scroll.setFixedWidth(370)
         body.addWidget(inspector_scroll)
-        layout.addLayout(body, stretch=1)
+        body_layout.addLayout(body, stretch=1)
+        layout.addWidget(self._corr_body, stretch=1)
         return group
+
+    def _corr_header_height(self) -> int:
+        """Height of the correspondence section once folded (title and toolbar)."""
+        layout = self._corr_group.layout()
+        assert layout is not None
+        layout.activate()
+        return self._corr_group.minimumSizeHint().height()
 
     # ── Signal wiring ────────────────────────────────────────────────────
 

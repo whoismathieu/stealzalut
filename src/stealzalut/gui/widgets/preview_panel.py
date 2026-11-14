@@ -1,8 +1,9 @@
 """Image preview panel.
 
 Displays an image (typically the colour-transfer result) scaled to
-fit the available space.  Also supports a simple "empty" state with
-a placeholder message.
+fit the available space, with zoom and pan (see
+:class:`~stealzalut.gui.widgets.image_view.ImageView`).  Also supports a
+simple "empty" state with a placeholder message.
 """
 
 from __future__ import annotations
@@ -13,10 +14,11 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QImage, QPixmap
-from PySide6.QtWidgets import QLabel, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtGui import QPixmap
+from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 from stealzalut.gui.overlay import highlight_zone
+from stealzalut.gui.widgets.image_view import ImageView
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +41,6 @@ class PreviewPanel(QWidget):
         super().__init__(parent)
 
         self._title = title
-        self._pixmap: QPixmap | None = None
         self._image_rgb: NDArray[np.uint8] | None = None
         self._highlight: NDArray[np.bool_] | None = None
 
@@ -54,14 +55,8 @@ class PreviewPanel(QWidget):
         layout.addWidget(self._title_label)
 
         # Image label
-        self._image_label = QLabel("No preview available")
-        self._image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._image_label.setWordWrap(True)
-        self._image_label.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Expanding,
-        )
-        self._image_label.setMinimumSize(260, 200)
+        self._image_label = ImageView("No preview available")
+        self._image_label.setMinimumSize(200, 160)
         self._image_label.setObjectName("previewImage")
         layout.addWidget(self._image_label)
 
@@ -98,36 +93,22 @@ class PreviewPanel(QWidget):
         """The current preview image (without highlight), or ``None``."""
         return self._image_rgb
 
+    @property
+    def view(self) -> ImageView:
+        """The zoomable display of the preview."""
+        return self._image_label
+
+    @property
+    def _pixmap(self) -> QPixmap | None:
+        return self._image_label.pixmap_shown
+
     def clear(self) -> None:
         """Clear the preview and show the placeholder text."""
-        self._pixmap = None
         self._image_rgb = None
         self._highlight = None
-        self._image_label.setPixmap(QPixmap())
-        self._image_label.setText("No preview available")
+        self._image_label.set_rgb(None)
 
     # ── Internal ─────────────────────────────────────────────────────────
 
     def _show_rgb(self, rgb: NDArray[np.uint8]) -> None:
-        h, w, ch = rgb.shape
-        qt_image = QImage(rgb.data.tobytes(), w, h, ch * w, QImage.Format.Format_RGB888)
-        self._pixmap = QPixmap.fromImage(qt_image)
-        self._update_display()
-
-    def _update_display(self) -> None:
-        """Scale the stored pixmap to fit the label."""
-        if self._pixmap is None:
-            return
-        scaled = self._pixmap.scaled(
-            self._image_label.size(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-        self._image_label.setText("")
-        self._image_label.setPixmap(scaled)
-
-    def resizeEvent(self, event: Any) -> None:
-        """Re-scale the preview when the widget is resized."""
-        self._update_display()
-        super().resizeEvent(event)
-
+        self._image_label.set_rgb(rgb)

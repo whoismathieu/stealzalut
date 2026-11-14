@@ -112,7 +112,7 @@ from stealzalut.gui.widgets.preview_panel import PreviewPanel
 from stealzalut.gui.widgets.responsive import ResponsiveRow, SplitterSection, collapse_button
 from stealzalut.gui.widgets.zone_inspector import ZoneInspector
 from stealzalut.gui.zone_text import dominant_colour_name, pct
-from stealzalut.utils.image_io import RAW_EXTENSIONS
+from stealzalut.utils.image_io import RAW_EXTENSIONS, RENDERING_FILE, RENDERING_NEUTRAL_RAW
 from stealzalut.workers.export_worker import ExportWorker
 from stealzalut.workers.transfer_worker import TransferWorker
 
@@ -132,6 +132,25 @@ _FOCUS_CHOICES: tuple[tuple[str, float], ...] = (
 )
 _IDLE_MESSAGE = "Charge une source et une référence pour voir leurs zones."
 _ANALYSING_MESSAGE = "Analyse des zones de couleur…"
+
+
+#: Shown when the RAW source was developed here (see ``image_io.develop_raw_linear``).
+_RAW_DEVELOPED_HINT = (
+    "La source est un fichier RAW, développé ici sur une base neutre : exposition de base "
+    "du fichier et courbe de base d'Adobe, sans aucun réglage automatique. C'est le socle "
+    "d'un profil neutre (Adobe Standard, curseurs à zéro), mais ce n'est pas le rendu exact "
+    "de ton logiciel : sa matrice couleur et sa gestion des hautes lumières diffèrent, et "
+    "l'écart n'a pas été mesuré. Pour un .cube exact, exporte la photo depuis ton logiciel "
+    "sur ce profil neutre (JPEG ou TIFF, Display P3) et utilise cet export comme source."
+)
+#: Shown when the RAW source could only be read through the camera's embedded JPEG.
+_RAW_PREVIEW_HINT = (
+    "La source est un fichier RAW que l'application n'a pas pu développer : l'aperçu "
+    "utilise le JPEG intégré par l'appareil, avec son rendu propre, ce qui faussera les "
+    "couleurs du .cube. Pour un résultat exact : dans ton logiciel, passe sur un profil "
+    "neutre (ex. Adobe Standard) avec les curseurs à zéro, exporte la photo (JPEG ou TIFF) "
+    "et utilise cet export ici."
+)
 
 
 def _make_flexible(combo: QComboBox, min_chars: int, max_width: int) -> None:
@@ -854,23 +873,17 @@ class MainWindow(QMainWindow):
             QApplication.restoreOverrideCursor()
         self._status_bar.showMessage(f"Image enregistrée : {target}")
 
-    # ── Source hint: a RAW file is previewed through its embedded JPEG ────
+    # ── Source hint: what a RAW source looks like here, and how far to trust it ──
 
     def _build_source_hint(self) -> QFrame:
         bar = QFrame()
         bar.setObjectName("modeHintBar")
         layout = QHBoxLayout(bar)
         layout.setContentsMargins(10, 6, 6, 6)
-        label = QLabel(
-            "La source est un fichier RAW : l'aperçu utilise le rendu de l'appareil et non "
-            "le développement de ton logiciel, ce qui faussera les couleurs du .cube. Pour "
-            "un résultat exact : dans ton logiciel, passe sur un profil neutre (ex. Adobe "
-            "Standard) avec les curseurs à zéro, exporte la photo (JPEG ou TIFF), utilise cet "
-            "export ici pour créer le .cube, puis applique le profil à ton RAW."
-        )
-        label.setObjectName("modeHintLabel")
-        label.setWordWrap(True)
-        layout.addWidget(label, stretch=1)
+        self._source_hint_label = QLabel()
+        self._source_hint_label.setObjectName("modeHintLabel")
+        self._source_hint_label.setWordWrap(True)
+        layout.addWidget(self._source_hint_label, stretch=1)
         close = QToolButton()
         close.setText("×")
         close.setObjectName("modeHintClose")
@@ -887,6 +900,11 @@ class MainWindow(QMainWindow):
             and path is not None
             and path.suffix.lower() in RAW_EXTENSIONS
         )
+        rendering = getattr(self._source_zone.image_rgb, "rendering", RENDERING_FILE)
+        if is_raw:
+            self._source_hint_label.setText(
+                _RAW_DEVELOPED_HINT if rendering == RENDERING_NEUTRAL_RAW else _RAW_PREVIEW_HINT
+            )
         self._source_hint.setVisible(is_raw)
 
     # ── Correspondence editor ────────────────────────────────────────────

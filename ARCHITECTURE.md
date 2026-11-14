@@ -70,7 +70,7 @@ src/stealzalut/
 │                               # adjustments_panel, finishing_panel, paste_recipe_dialog,
 │                               # image_view (zoom and pan), responsive (wrapping toolbars, folding sections)
 ├── utils/
-│   ├── image_io.py             # WideImage, native ICC decoding, RAW/DNG (embedded preview / rawpy), HEIC
+│   ├── image_io.py             # WideImage, native ICC decoding, neutral RAW/DNG development (rawpy), HEIC
 │   └── paths.py                # Path resolution compatible with PyInstaller (sys._MEIPASS)
 └── devtools/
     ├── ground_truth.py         # Known-truth bench in Display P3 (not imported by the application)
@@ -89,6 +89,14 @@ src/stealzalut/
    - When the file carries a wide-gamut ICC profile recognised by substring (`Display P3`, `Adobe RGB` / `ClayRGB` / `opRGB`, `ProPhoto` / `ROMM`), `WideImage` carries two more things:
      - `analysis_lab`: an `(h, w, 3)` `float64` array of the **unclipped Oklab** colours of the analysis copy (256 px), computed from the file's own values with the exact matrices of `core/rgb_spaces.py`.
      - `native` and `native_space`: the full-size pixels as encoded in the file, and their `RGBSpace`.
+   - **RAW / DNG files (`develop_raw_pixels`, `rendering = "neutral-raw"`).** They are developed here, with fixed operations that never look at the picture's histogram (the earlier loader read the camera's JPEG, then, failing that, forced the median of every picture to 40 % and boosted saturation in HSV):
+     1. `rawpy.postprocess(use_camera_wb=True, no_auto_bright=True, gamma=(1, 1), output_bps=16, output_color=ProPhoto)`: 16-bit linear ProPhoto;
+     2. `exposure_curve(max(R, G, B), BaselineExposure)`, the three channels scaled alike. A positive exposure is a gain `2 ** ev` up to 0.8, then a shoulder of the same slope that reaches 1 for the brightest input; a negative one is the darkening of the DNG SDK. The tag is read in the main directory and its sub-directories (`read_dng_tags`), and ignored outside ±4 EV;
+     3. `base_curve`: the default ACR3 curve of the DNG SDK (`dng_tone_curve_acr3_default`, 129 samples, linear in and out), with the DNG rule for curves: largest and smallest channel through the curve, the middle one at the same relative position. No saturation step.
+     - The array is the sRGB reduction, `native` is the same development encoded in `DISPLAY_P3`, and `analysis_lab` is the average of the **developed** pixels, reduced band by band in a cube-root encoding. Developing a picture already reduced to 256 px averages the light before the curve: on a night scene a lamp lifts its dark neighbours and the analysis reads 0.013 of lightness more than the pixels the LUT is applied to (0.0004 with the present order).
+     - A `ProfileGainTableMap` (Apple ProRAW) is deliberately **not** applied: it belongs to the file's own profile, not to Adobe Standard.
+     - Fallbacks, in order: the JPEG embedded by the camera when it is at least 1024 px (`rendering = "camera-preview"`, also what `auto_develop_raw=False` asks for), then Pillow. `MainWindow._update_source_hint` words its banner on `rendering`.
+     - **Not measured against Lightroom.** There is no Adobe Standard export of a RAW file in the test material; the banner and the README say so. Measured on one iPhone 15 Pro Max ProRAW night scene (`BaselineExposure` +1.615 EV, gain table map 48 × 64 × 257 with gains from 0.36 to 5.1): against the embedded Display P3 JPEG, the development is 0.01 darker under L = 0.5 and 0.06 brighter above, with a mean chroma of 0.026 instead of 0.035; applying the gain table map and the profile's own tone curve instead reproduces that JPEG to 0.046 RMS, which confirms what the JPEG's look is made of.
    - **`WideImage` invariant.** Any slicing, copy or resize (`create_thumbnail`, `np.asarray`, indexing) goes through `__array_finalize__` and resets `analysis_lab` and `native` to `None`. The engine's single entry point for reading the analysis is `core/palette.py:analysis_oklab(image)`.
 2. **Engine space (`core/colorspace.py`)**
    - The whole engine works in **unbounded Oklab**. The conversion to LMS uses a signed cube root (`np.cbrt(lms)`), so coordinates outside the sRGB gamut are kept without clipping.

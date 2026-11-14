@@ -211,3 +211,35 @@ def test_plain_arrays_behave_as_before() -> None:
 def test_profile_names_are_matched_by_substring(description: str, expected: str | None) -> None:
     space = image_io._known_space(description)
     assert (None if space is None else space.key) == expected
+
+
+# ── A RAW file developed here is a wide picture like any other ───────────────
+
+
+def test_a_developed_raw_file_enters_the_engine_and_the_lut_in_wide_gamut() -> None:
+    from stealzalut.core.lut_apply import source_pixels
+    from stealzalut.utils.image_io import RENDERING_FILE, RENDERING_NEUTRAL_RAW, develop_raw_pixels
+
+    linear = np.zeros((300, 400, 3), dtype=np.uint16)
+    linear[..., 1] = 30000  # ProPhoto green, outside sRGB
+    linear[:, :200, 0] = 12000
+    image = develop_raw_pixels(linear)
+    assert image.rendering == RENDERING_NEUTRAL_RAW
+
+    # The engine reads the developed colours, not their sRGB clipping
+    lab, height, width = analysis_oklab(image)
+    assert (height, width) == create_thumbnail(image, WIDE_ANALYSIS_SIZE).shape[:2]
+    assert image.analysis_lab is not None
+    assert np.array_equal(lab, image.analysis_lab.reshape(-1, 3))
+    clipped = srgb_to_oklab(create_thumbnail(image, ANALYSIS_MAX_SIZE).reshape(-1, 3) / 255.0)
+    assert _chroma(lab).mean() > _chroma(clipped).mean() + 0.02
+
+    # The LUT is applied to the Display P3 pixels, at any preview size
+    pixels, space = source_pixels(image)
+    assert space is DISPLAY_P3 and pixels is image.native
+    small, space = source_pixels(image, 128)
+    assert space is DISPLAY_P3 and max(small.shape[:2]) == 128
+
+    # A crop is other pixels: nothing of the development follows it
+    crop = image[:10]
+    assert crop.native is None and crop.rendering == RENDERING_FILE

@@ -107,7 +107,7 @@ class TestImageDropZone:
         dng_path = tmp_path / "photo.dng"
         dng_path.write_bytes(b"mock raw bytes")
 
-        mock_rgb = np.full((70, 90, 3), 150, dtype=np.uint8)
+        mock_rgb = np.full((70, 90, 3), 9000, dtype=np.uint16)  # 16-bit linear
         mock_raw = MagicMock()
         mock_raw.postprocess.return_value = mock_rgb
         mock_raw.__enter__.return_value = mock_raw
@@ -126,7 +126,7 @@ class TestImageDropZone:
         cr2_path = tmp_path / "photo.cr2"
         cr2_path.write_bytes(b"mock cr2 bytes")
 
-        mock_rgb = np.full((70, 90, 3), 150, dtype=np.uint8)
+        mock_rgb = np.full((70, 90, 3), 9000, dtype=np.uint16)  # 16-bit linear
         mock_raw = MagicMock()
         mock_raw.postprocess.return_value = mock_rgb
         mock_raw.__enter__.return_value = mock_raw
@@ -962,25 +962,48 @@ class TestSourceFidelity:
     """What the preview shows is what can be exported, and RAW sources are flagged."""
 
     def test_raw_source_is_flagged(
-        self, qapp: QApplication, default_settings: Settings, sample_image_path: Path
+        self,
+        qapp: QApplication,
+        default_settings: Settings,
+        sample_image_path: Path,
+        tmp_path: Path,
     ) -> None:
+        """A RAW source says how it was rendered, and how far that can be trusted."""
+        from unittest.mock import MagicMock
+
+        from stealzalut.gui.main_window import _RAW_DEVELOPED_HINT, _RAW_PREVIEW_HINT
+
         window = MainWindow(settings=default_settings)
+        label = window._source_hint.findChild(QLabel, "modeHintLabel")
         try:
             with patch.object(window, "_run_transfer_preview"):
                 window._source_zone.load_from_path(sample_image_path)
             assert window._source_hint.isHidden()  # a PNG is what it looks like
 
+            # A RAW file read through the camera's JPEG: the camera's look, not the host's
             window._source_zone._image_path = Path("IMG_0001.DNG")
             window._update_source_hint()
             assert not window._source_hint.isHidden()
-            text = window._source_hint.findChild(QLabel, "modeHintLabel").text()
-            assert text == (
-                "La source est un fichier RAW : l'aperçu utilise le rendu de l'appareil et non "
-                "le développement de ton logiciel, ce qui faussera les couleurs du .cube. Pour "
-                "un résultat exact : dans ton logiciel, passe sur un profil neutre (ex. Adobe "
-                "Standard) avec les curseurs à zéro, exporte la photo (JPEG ou TIFF), utilise "
-                "cet export ici pour créer le .cube, puis applique le profil à ton RAW."
-            )
+            assert label.text() == _RAW_PREVIEW_HINT
+            assert "JPEG intégré par l'appareil" in label.text()
+
+            # A RAW file developed here: neutral, but not the host's exact rendering
+            raw_path = tmp_path / "photo.dng"
+            raw_path.write_bytes(b"mock raw bytes")
+            mock_raw = MagicMock()
+            mock_raw.postprocess.return_value = np.full((70, 90, 3), 9000, dtype=np.uint16)
+            mock_raw.__enter__.return_value = mock_raw
+            mock_raw.__exit__.return_value = None
+            with (
+                patch("rawpy.imread", return_value=mock_raw),
+                patch.object(window, "_run_transfer_preview"),
+            ):
+                assert window._source_zone.load_from_path(raw_path)
+            assert not window._source_hint.isHidden()
+            assert label.text() == _RAW_DEVELOPED_HINT
+            assert "développé ici sur une base neutre" in label.text()
+            assert "l'écart n'a pas été mesuré" in label.text()
+            assert window._source_zone.image_rgb.native_space.key == "display-p3"
 
             window._source_zone.clear_image()
             assert window._source_hint.isHidden()

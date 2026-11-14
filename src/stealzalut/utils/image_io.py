@@ -64,6 +64,11 @@ SUPPORTED_EXTENSIONS: frozenset[str] = frozenset(
 #: Longest edge of the analysis copy (must equal ``palette.ANALYSIS_MAX_SIZE``).
 WIDE_ANALYSIS_SIZE = 256
 
+#: Values of :attr:`WideImage.rendering`.
+RENDERING_FILE = "file"
+RENDERING_NEUTRAL_RAW = "neutral-raw"
+RENDERING_CAMERA_PREVIEW = "camera-preview"
+
 
 class WideImage(np.ndarray[Any, np.dtype[np.uint8]]):
     """An sRGB uint8 picture that also remembers its colours before clipping.
@@ -87,12 +92,18 @@ class WideImage(np.ndarray[Any, np.dtype[np.uint8]]):
             8 bits is only made afterwards, for the screen or a file.
         native_space: The :class:`~stealzalut.core.rgb_spaces.RGBSpace` of
             ``native`` (``None`` without ``native``).
+        rendering: Where the colours come from: :data:`RENDERING_FILE` (the
+            file's own pixels), :data:`RENDERING_NEUTRAL_RAW` (a RAW file
+            developed here, see :func:`develop_raw_linear`) or
+            :data:`RENDERING_CAMERA_PREVIEW` (the JPEG the camera embedded in
+            a RAW file, with the camera's own look).
     """
 
     analysis_lab: NDArray[np.float64] | None
     source_space: str
     native: NDArray[np.uint8] | None
     native_space: Any
+    rendering: str
 
     def __new__(
         cls,
@@ -101,12 +112,14 @@ class WideImage(np.ndarray[Any, np.dtype[np.uint8]]):
         source_space: str = "sRGB",
         native: NDArray[np.uint8] | None = None,
         native_space: Any = None,
+        rendering: str = "file",
     ) -> WideImage:
         obj = np.asarray(srgb, dtype=np.uint8).view(cls)
         obj.analysis_lab = analysis_lab
         obj.source_space = source_space
         obj.native = native
         obj.native_space = native_space if native is not None else None
+        obj.rendering = rendering
         return obj
 
     def __array_finalize__(self, obj: Any) -> None:
@@ -115,6 +128,7 @@ class WideImage(np.ndarray[Any, np.dtype[np.uint8]]):
         self.source_space = "sRGB"
         self.native = None
         self.native_space = None
+        self.rendering = RENDERING_FILE
 
 
 def _profile_description(img: Any) -> str:
@@ -211,20 +225,50 @@ def load_image_rgb(path: str | Path, auto_develop_raw: bool = True) -> WideImage
     Same files and errors as :func:`load_image_bgr`.  When the file is in a
     wider space than sRGB (Display P3, Adobe RGB, ProPhoto), the result
     carries ``analysis_lab`` and ``native``; see :class:`WideImage`.
+
+    A RAW / DNG file is developed here on a neutral base
+    (:func:`develop_raw_linear`) and comes back with its pixels in Display P3.
+    With ``auto_develop_raw=False``, or when the file cannot be demosaiced,
+    the JPEG the camera embedded in it is used instead.
     """
     path = Path(path)
-    rgb = bgr_to_rgb(load_image_bgr(path, auto_develop_raw=auto_develop_raw))
-    small_shape = create_thumbnail(rgb, WIDE_ANALYSIS_SIZE).shape[:2]
+    rendering = RENDERING_FILE
+    if path.suffix.lower() in RAW_EXTENSIONS and path.exists():
+        if auto_develop_raw:
+            developed = _develop_raw_file(path)
+            if developed is not None:
+                return developed
+        preview = _raw_preview_bgr(path)
+        if preview is not None:
+            rgb = bgr_to_rgb(preview)
+            rendering = RENDERING_CAMERA_PREVIEW
+        else:
+            # No usable preview: develop after all, then whatever Pillow reads
+            developed = None if auto_develop_raw else _develop_raw_file(path)
+            if developed is not None:
+                return developed
+            rgb = bgr_to_rgb(_load_pillow_raw_bgr(path))
+    else:
+        rgb = bgr_to_rgb(load_image_bgr(path, auto_develop_raw=auto_develop_raw))
+    small_shape = _analysis_shape(rgb.shape[0], rgb.shape[1])
     found = _native_pixels(path)
     if found is None:
-        return WideImage(rgb)
+        return WideImage(rgb, rendering=rendering)
     native, space = found
-    analysis = _analysis_of(native, space, (int(small_shape[0]), int(small_shape[1])))
+    analysis = _analysis_of(native, space, small_shape)
     if native.shape != rgb.shape:
-        # Not the picture that is displayed (a RAW file developed here rather
-        # than read from its preview): its colours still inform the engine.
-        return WideImage(rgb, analysis, str(space.label))
-    return WideImage(rgb, analysis, str(space.label), native, space)
+        # Not the picture that is displayed: its colours still inform the engine.
+        return WideImage(rgb, analysis, str(space.label), rendering=rendering)
+    return WideImage(rgb, analysis, str(space.label), native, space, rendering)
+
+
+def _analysis_shape(height: int, width: int) -> tuple[int, int]:
+    """``(h, w)`` of the analysis copy: what :func:`create_thumbnail` gives."""
+    longest = max(height, width)
+    if longest <= WIDE_ANALYSIS_SIZE:
+        return height, width
+    scale = WIDE_ANALYSIS_SIZE / longest
+    return int(height * scale), int(width * scale)
 
 
 # ── Colour management ────────────────────────────────────────────────────────
@@ -293,33 +337,330 @@ def _load_heic_bgr(path: Path) -> ImageArray:
         raise ValueError(f"Failed to decode HEIC image {path}: {exc}") from exc
 
 
-def _read_dng_baseline_exposure(path: Path) -> float:
-    """Read the Adobe/DNG BaselineExposure tag (50730) if present.
+# ── RAW / DNG: neutral development ───────────────────────────────────────────
+#
+# A LUT is computed from what the source looks like *before* it.  For a RAW
+# file that is the host's base rendering (Adobe Standard, sliders at zero),
+# not the camera's JPEG, and never something that depends on the picture's
+# histogram: every picture goes through the same fixed operations.
 
-    Returns exposure shift in EV (stops), e.g. 1.0 = +1 stop. Defaults to 0.0.
+#: DNG tags read by :func:`read_dng_tags`.
+_TAG_SUB_IFDS = 330
+_TAG_BASELINE_EXPOSURE = 50730
+_TAG_PROFILE_GAIN_TABLE_MAP = 52525
+
+#: BaselineExposure outside this range (EV) is taken for a broken tag.
+BASELINE_EXPOSURE_RANGE = (-4.0, 4.0)
+#: Linear value above which a positive exposure rolls off instead of clipping.
+EXPOSURE_KNEE = 0.8
+
+#: Default base tone curve of Adobe Camera Raw ("ACR3"), linear in → linear out,
+#: sampled every 1/128 from ``dng_tone_curve_acr3_default`` of the Adobe DNG
+#: SDK (``dng_render.cpp``, 1025 entries there).  A profile without a curve of
+#: its own, Adobe Standard included, is rendered with it.
+ACR3_BASE_CURVE: NDArray[np.float64] = np.array(
+    [
+        0.00000, 0.00623, 0.01485, 0.02643, 0.04002, 0.05483, 0.07057, 0.08710,
+        0.10433, 0.12218, 0.14061, 0.15956, 0.17901, 0.19893, 0.21929, 0.23963,
+        0.25961, 0.27918, 0.29833, 0.31704, 0.33531, 0.35313, 0.37050, 0.38742,
+        0.40389, 0.41993, 0.43554, 0.45073, 0.46551, 0.47989, 0.49387, 0.50747,
+        0.52069, 0.53356, 0.54607, 0.55824, 0.57007, 0.58159, 0.59281, 0.60373,
+        0.61436, 0.62472, 0.63482, 0.64466, 0.65426, 0.66362, 0.67275, 0.68165,
+        0.69035, 0.69883, 0.70711, 0.71520, 0.72309, 0.73081, 0.73834, 0.74570,
+        0.75289, 0.75992, 0.76679, 0.77350, 0.78006, 0.78647, 0.79274, 0.79887,
+        0.80486, 0.81072, 0.81645, 0.82205, 0.82753, 0.83288, 0.83812, 0.84324,
+        0.84825, 0.85315, 0.85794, 0.86262, 0.86720, 0.87168, 0.87606, 0.88034,
+        0.88453, 0.88862, 0.89262, 0.89653, 0.90035, 0.90408, 0.90773, 0.91130,
+        0.91478, 0.91818, 0.92150, 0.92475, 0.92792, 0.93101, 0.93403, 0.93698,
+        0.93986, 0.94266, 0.94540, 0.94807, 0.95067, 0.95320, 0.95567, 0.95808,
+        0.96042, 0.96271, 0.96493, 0.96709, 0.96919, 0.97123, 0.97322, 0.97515,
+        0.97702, 0.97884, 0.98061, 0.98232, 0.98398, 0.98558, 0.98714, 0.98864,
+        0.99009, 0.99150, 0.99285, 0.99416, 0.99542, 0.99664, 0.99780, 0.99892,
+        1.00000,
+    ]
+)  # fmt: skip
+_CURVE_X: NDArray[np.float64] = np.linspace(0.0, 1.0, ACR3_BASE_CURVE.size, dtype=np.float64)
+
+#: Rows developed at a time (bounds the memory of a 50-megapixel file).
+_DEVELOP_ROWS = 256
+
+_TIFF_TYPES = {1: "B", 3: "H", 4: "I", 5: "II", 7: "B", 8: "h", 9: "i", 10: "ii", 11: "f", 12: "d"}
+
+
+def read_dng_tags(path: Path) -> tuple[float, bool]:
+    """BaselineExposure (EV) and presence of a ProfileGainTableMap in a DNG file.
+
+    The main directory and its sub-directories are read: the gain table map of
+    an Apple ProRAW file sits with the raw pixels, not in the first directory.
+    Any other file, or a file that cannot be parsed, gives ``(0.0, False)``.
     """
     if path.suffix.lower() != ".dng":
-        return 0.0
-    try:
-        from PIL import Image
+        return 0.0, False
+    import struct
 
-        with Image.open(path) as img:
-            tags = getattr(img, "tag_v2", None) or getattr(img, "tag", None)
-            if tags and 50730 in tags:
-                val = tags[50730]
-                if isinstance(val, (int, float)):
-                    return float(val)
-                if (
-                    hasattr(val, "numerator")
-                    and hasattr(val, "denominator")
-                    and val.denominator != 0
-                ):
-                    return float(val.numerator) / float(val.denominator)
-                if isinstance(val, (tuple, list)) and len(val) >= 2 and val[1] != 0:
-                    return float(val[0]) / float(val[1])
+    baseline, gain_map = 0.0, False
+    try:
+        with path.open("rb") as handle:
+            order = {b"II": "<", b"MM": ">"}.get(handle.read(2))
+            if order is None or struct.unpack(order + "H", handle.read(2))[0] != 42:
+                return 0.0, False
+
+            def directory(offset: int) -> dict[int, tuple[int, int, bytes]]:
+                handle.seek(offset)
+                (count,) = struct.unpack(order + "H", handle.read(2))
+                entries = {}
+                for _ in range(min(count, 512)):
+                    tag, kind, number, raw = struct.unpack(order + "HHI4s", handle.read(12))
+                    entries[tag] = (kind, number, raw)
+                return entries
+
+            def values(entry: tuple[int, int, bytes], limit: int = 16) -> tuple[float, ...]:
+                kind, number, raw = entry
+                code = _TIFF_TYPES.get(kind)
+                if code is None:
+                    return ()
+                size = struct.calcsize(order + code)
+                number = min(number, limit)
+                if size * number <= 4:
+                    data = raw[: size * number]
+                else:
+                    handle.seek(struct.unpack(order + "I", raw)[0])
+                    data = handle.read(size * number)
+                flat = struct.unpack(order + code * number, data)
+                if kind in (5, 10):
+                    return tuple(
+                        flat[i] / flat[i + 1] if flat[i + 1] else 0.0
+                        for i in range(0, len(flat), 2)
+                    )
+                return tuple(float(v) for v in flat)
+
+            (first,) = struct.unpack(order + "I", handle.read(4))
+            main = directory(first)
+            subs = [int(v) for v in values(main[_TAG_SUB_IFDS])] if _TAG_SUB_IFDS in main else []
+            for entries in [main, *[directory(offset) for offset in subs]]:
+                if _TAG_PROFILE_GAIN_TABLE_MAP in entries:
+                    gain_map = True
+                if _TAG_BASELINE_EXPOSURE in entries:
+                    found = values(entries[_TAG_BASELINE_EXPOSURE])
+                    if found and np.isfinite(found[0]):
+                        baseline = float(found[0])
     except Exception as exc:
-        logger.debug("Could not read BaselineExposure from %s: %s", path, exc)
-    return 0.0
+        logger.debug("Could not read the DNG tags of %s: %s", path, exc)
+        return 0.0, False
+    low, high = BASELINE_EXPOSURE_RANGE
+    if not low <= baseline <= high:
+        baseline = 0.0
+    return baseline, gain_map
+
+
+def _read_dng_baseline_exposure(path: Path) -> float:
+    """The DNG BaselineExposure tag (50730) in EV; 0.0 when absent or not a DNG."""
+    return read_dng_tags(path)[0]
+
+
+def exposure_curve(value: NDArray[np.float64], exposure_ev: float) -> NDArray[np.float64]:
+    """Apply *exposure_ev* stops to linear values in ``[0, 1]``, staying in ``[0, 1]``.
+
+    A fixed function of the value, increasing, with 0 → 0 and 1 → 1 for any
+    non-zero exposure:
+
+    - positive: a plain gain ``2 ** ev`` up to :data:`EXPOSURE_KNEE`, then a
+      shoulder with the same slope at the knee that reaches 1 for the brightest
+      input.  A DNG whose BaselineExposure is large (+1.6 EV on Apple ProRAW,
+      which counts on its gain table map to pull the highlights back) keeps
+      its highlights instead of losing everything above ``2 ** -ev``;
+    - negative: the darkening of the DNG SDK (``dng_function_exposure_tone``),
+      a slope ``2 ** ev`` up to 0.25 and a parabola that still maps 1 to 1.
+    """
+    value = np.clip(value, 0.0, 1.0)
+    if exposure_ev > 0.0:
+        gain = 2.0**exposure_ev
+        lifted = value * gain
+        knee = EXPOSURE_KNEE
+        power = (gain - knee) / (1.0 - knee)
+        over = np.clip((lifted - knee) / (gain - knee), 0.0, 1.0)
+        shoulder = knee + (1.0 - knee) * (1.0 - (1.0 - over) ** power)
+        return cast("NDArray[np.float64]", np.where(lifted <= knee, lifted, shoulder))
+    if exposure_ev < 0.0:
+        slope = 2.0**exposure_ev
+        a = 16.0 / 9.0 * (1.0 - slope)
+        b = slope - 0.5 * a
+        c = 1.0 - a - b
+        curved = (a * value + b) * value + c
+        return cast("NDArray[np.float64]", np.where(value <= 0.25, value * slope, curved))
+    return value
+
+
+def base_curve(value: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Adobe's default base tone curve on linear values in ``[0, 1]``."""
+    return np.interp(value, _CURVE_X, ACR3_BASE_CURVE)
+
+
+def develop_raw_linear(
+    linear_prophoto: NDArray[np.float64], baseline_exposure: float = 0.0
+) -> NDArray[np.float64]:
+    """Neutral development of demosaiced pixels: linear ProPhoto in, linear ProPhoto out.
+
+    Two fixed steps, the same for every picture (nothing is measured on it):
+
+    1. the file's BaselineExposure (:func:`exposure_curve`), as a scale of the
+       three channels by what it does to the largest one, so that hue and
+       saturation are untouched;
+    2. Adobe's default base curve (:func:`base_curve`) with the DNG rule for
+       curves: the largest and the smallest channel go through the curve, the
+       middle one keeps its relative position between them.  Hue is constant
+       in the working space; there is no saturation or vibrance step.
+
+    Args:
+        linear_prophoto: ``(N, 3)`` linear ProPhoto RGB, scene white near 1.
+        baseline_exposure: Stops, from the DNG tag (0 for other RAW files).
+
+    Returns:
+        ``(N, 3)`` linear ProPhoto RGB in ``[0, 1]``, ready to be encoded.
+    """
+    rgb = np.clip(np.asarray(linear_prophoto, dtype=np.float64), 0.0, 1.0)
+    largest = rgb.max(axis=1, keepdims=True)
+    if baseline_exposure != 0.0:
+        exposed = exposure_curve(largest, baseline_exposure)
+        rgb = rgb * np.divide(exposed, largest, out=np.ones_like(largest), where=largest > 0.0)
+        largest = exposed
+    smallest = rgb.min(axis=1, keepdims=True)
+    top, bottom = base_curve(largest), base_curve(smallest)
+    span = largest - smallest
+    position = np.divide(rgb - smallest, span, out=np.zeros_like(rgb), where=span > 0.0)
+    return cast("NDArray[np.float64]", bottom + position * (top - bottom))
+
+
+def _demosaic_linear(raw: Any) -> NDArray[np.uint16]:
+    """Demosaic *raw* (an open rawpy file) to 16-bit linear ProPhoto RGB.
+
+    White balance as shot; no automatic brightening, no tone curve.
+    """
+    import rawpy
+
+    settings: dict[str, Any] = {
+        "output_color": rawpy.ColorSpace.ProPhoto,  # type: ignore[attr-defined]
+        "output_bps": 16,
+        "gamma": (1.0, 1.0),
+        "no_auto_bright": True,
+    }
+    try:
+        linear = raw.postprocess(use_camera_wb=True, **settings)
+    except Exception as exc:
+        logger.debug("No camera white balance (%s): using LibRaw's automatic one", exc)
+        linear = raw.postprocess(use_auto_wb=True, **settings)
+    if not isinstance(linear, np.ndarray) or linear.ndim != 3 or linear.shape[2] != 3:
+        raise ValueError("LibRaw did not return an RGB picture")
+    if linear.dtype != np.uint16:
+        raise ValueError(f"LibRaw returned {linear.dtype} pixels, expected 16 bits")
+    return linear
+
+
+def _develop_rows(
+    rows: NDArray[np.uint16], baseline_exposure: float
+) -> NDArray[np.float32]:
+    """:func:`develop_raw_linear` on 16-bit pixels, through tables (fast path).
+
+    The exposure and the curve are functions of one value: they are tabulated
+    on the 65 536 values a channel takes.  Same result as the reference
+    function to within the 16-bit step.
+    """
+    levels = np.arange(65536, dtype=np.float64) / 65535.0
+    exposed = exposure_curve(levels, baseline_exposure)
+    ratio = np.divide(exposed, levels, out=np.ones_like(levels), where=levels > 0.0)
+    curve = base_curve(levels).astype(np.float32)
+    top_table = base_curve(exposed).astype(np.float32)
+
+    largest = rows.max(axis=2)
+    smallest = rows.min(axis=2)
+    top = top_table[largest]
+    low = np.rint(smallest * ratio.astype(np.float32)[largest]).astype(np.uint16)
+    bottom = curve[low]
+    span = (largest - smallest).astype(np.float32)
+    scale = np.divide(top - bottom, span, out=np.zeros_like(span), where=span > 0.0)
+    offset = (rows - smallest[..., None]).astype(np.float32)
+    return cast("NDArray[np.float32]", bottom[..., None] + offset * scale[..., None])
+
+
+def develop_raw_pixels(linear16: NDArray[np.uint16], baseline_exposure: float = 0.0) -> WideImage:
+    """A :class:`WideImage` from 16-bit linear ProPhoto pixels (see :func:`develop_raw_linear`).
+
+    The displayed array is sRGB; ``native`` holds the same pixels in Display
+    P3; ``analysis_lab`` is computed from the developed floating-point values,
+    before any gamut is clipped (ProPhoto holds colours neither sRGB nor
+    Display P3 can).
+    """
+    from stealzalut.core.colorspace import linear_to_oklab
+    from stealzalut.core.rgb_spaces import DISPLAY_P3, PROPHOTO_RGB, SRGB
+
+    height, width = linear16.shape[:2]
+    to_srgb = np.asarray(PROPHOTO_RGB.to_linear_srgb, dtype=np.float64)
+    to_p3 = np.linalg.inv(np.asarray(DISPLAY_P3.to_linear_srgb, dtype=np.float64)) @ to_srgb
+    # sRGB and Display P3 share one transfer curve: one table encodes both
+    steps = 65535
+    encode = np.rint(SRGB.encode(np.arange(steps + 1, dtype=np.float64) / steps) * 255.0).astype(
+        np.uint8
+    )
+
+    def encoded(developed: NDArray[np.float32], matrix: NDArray[np.float64]) -> NDArray[np.uint8]:
+        linear = np.clip(developed @ matrix.T.astype(np.float32), 0.0, 1.0)
+        return encode[np.rint(linear * steps).astype(np.uint16)]
+
+    # The analysis copy is an average of the *developed* pixels.  Reducing the
+    # picture first and developing it afterwards would average the light before
+    # the curve: one bright lamp then lifts its dark neighbours, and the engine
+    # would read a brighter picture than the one the LUT is applied to.  Each
+    # band is therefore reduced once developed, in a cube-root (perceptual)
+    # encoding, by a whole factor; the final size is reached at the end.
+    small_h, small_w = _analysis_shape(height, width)
+    factor = 1
+    while factor < 16 and height // (2 * factor) >= small_h and width // (2 * factor) >= small_w:
+        factor *= 2
+
+    srgb = np.empty((height, width, 3), dtype=np.uint8)
+    native = np.empty((height, width, 3), dtype=np.uint8)
+    reduced: list[NDArray[Any]] = []
+    for start in range(0, height, _DEVELOP_ROWS):
+        developed = _develop_rows(linear16[start : start + _DEVELOP_ROWS], baseline_exposure)
+        srgb[start : start + _DEVELOP_ROWS] = encoded(developed, to_srgb)
+        native[start : start + _DEVELOP_ROWS] = encoded(developed, to_p3)
+        perceptual: NDArray[Any] = np.cbrt(developed)
+        if factor > 1:
+            rows = max(1, round(developed.shape[0] / factor))
+            perceptual = cv2.resize(
+                perceptual, (width // factor, rows), interpolation=cv2.INTER_AREA
+            )
+        reduced.append(perceptual)
+    small = np.vstack(reduced)
+    if small.shape[:2] != (small_h, small_w):
+        small = cv2.resize(small, (small_w, small_h), interpolation=cv2.INTER_AREA)
+    linear = small.reshape(-1, 3).astype(np.float64) ** 3
+    analysis = linear_to_oklab(linear @ to_srgb.T).reshape(small_h, small_w, 3)
+    return WideImage(
+        srgb, analysis, str(DISPLAY_P3.label), native, DISPLAY_P3, RENDERING_NEUTRAL_RAW
+    )
+
+
+def _develop_raw_file(path: Path) -> WideImage | None:
+    """Develop the RAW file at *path*, or ``None`` when LibRaw cannot demosaic it."""
+    try:
+        import rawpy
+
+        with rawpy.imread(str(path)) as raw:
+            linear = _demosaic_linear(raw)
+    except Exception as exc:
+        logger.info("Cannot develop %s (%s): falling back to its embedded preview", path, exc)
+        return None
+    baseline, gain_map = read_dng_tags(path)
+    logger.info(
+        "Developed %s: %dx%d, BaselineExposure %+.2f EV%s",
+        path.name,
+        linear.shape[1],
+        linear.shape[0],
+        baseline,
+        " (gain table map ignored, as outside the file's own profile)" if gain_map else "",
+    )
+    return develop_raw_pixels(linear, baseline)
 
 
 def _try_extract_embedded_preview(raw: Any) -> ImageArray | None:
@@ -340,7 +681,7 @@ def _try_extract_embedded_preview(raw: Any) -> ImageArray | None:
                 transposed = _pil_to_srgb(ImageOps.exif_transpose(img))
                 rgb = np.array(transposed.convert("RGB"), dtype=np.uint8)
                 h, w = rgb.shape[:2]
-                # If preview is high-resolution (longest edge >= 1024), use camera's processed image
+                # A small thumbnail is not a picture to compute a LUT from
                 if max(h, w) >= 1024:
                     logger.info("Using embedded camera preview JPEG (%dx%d)", w, h)
                     return cast("ImageArray", cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
@@ -349,106 +690,49 @@ def _try_extract_embedded_preview(raw: Any) -> ImageArray | None:
     return None
 
 
-def enhance_raw_photographic(image_bgr: ImageArray) -> ImageArray:
-    """Enhance demosaiced raw image with photographic exposure, tone curve & vibrance.
-
-    Raw sensor data demosaiced without a camera profile is typically linear-ish,
-    underexposed (low midtone reflectance), flat in contrast, and desaturated.
-    This function:
-      1. Adaptively lifts underexposed midtones towards photographic 18% gray target
-         using smooth power gamma without blowing highlights.
-      2. Applies a photographic contrast S-curve (filmic smoothstep blend) to give punch.
-      3. Enhances color vibrance in HSV space so colors match developed photographic intensity.
-    """
-    if image_bgr.size == 0 or image_bgr.ndim != 3 or image_bgr.shape[2] != 3:
-        return image_bgr
-
-    img_f = image_bgr.astype(np.float32) / 255.0
-
-    # 1. Luminance analysis (Rec.709 coefficients)
-    lum = 0.0722 * img_f[:, :, 0] + 0.7152 * img_f[:, :, 1] + 0.2126 * img_f[:, :, 2]
-    med_lum = float(np.median(lum))
-
-    # Standard photographic target for middle gray in sRGB is ~0.38 - 0.42
-    if 0.005 < med_lum < 0.35:
-        target_mid = 0.40
-        gamma = float(np.clip(np.log(target_mid) / np.log(med_lum), 0.50, 1.0))
-        img_f = np.power(img_f, gamma)
-
-    # 2. Photographic S-curve (smooth contrast curve: 35% S-curve, 65% linear)
-    s_curve = img_f * img_f * (3.0 - 2.0 * img_f)
-    img_f = 0.65 * img_f + 0.35 * s_curve
-
-    # 3. Vibrance boost in HSV space
-    bgr_temp = np.clip(img_f * 255.0, 0, 255).astype(np.uint8)
-    hsv = cv2.cvtColor(bgr_temp, cv2.COLOR_BGR2HSV).astype(np.float32)
-    sat = hsv[:, :, 1] / 255.0
-    sat_boosted = sat + 0.35 * sat * (1.0 - sat)
-    hsv[:, :, 1] = np.clip(sat_boosted * 255.0, 0, 255)
-
-    return cast("ImageArray", cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR))
-
-
-def _load_raw_bgr(path: Path, auto_develop: bool = True) -> ImageArray:
-    """Load a camera RAW/DNG image as BGR uint8 NumPy array with photographic intensity."""
+def _raw_preview_bgr(path: Path) -> ImageArray | None:
+    """The JPEG the camera embedded in the RAW file at *path*, as BGR (``None`` if none)."""
     try:
         import rawpy
 
         with rawpy.imread(str(path)) as raw:
-            # 1. Try camera-embedded high-resolution preview JPEG
-            if auto_develop:
-                embedded = _try_extract_embedded_preview(raw)
-                if embedded is not None:
-                    return embedded
+            return _try_extract_embedded_preview(raw)
+    except Exception as exc:
+        logger.debug("rawpy cannot open %s: %s", path, exc)
+        return None
 
-            # 2. Demosaic via LibRaw with baseline exposure compensation
-            color_space_srgb = rawpy.ColorSpace.sRGB  # type: ignore[attr-defined]
-            baseline_ev = _read_dng_baseline_exposure(path)
-            exp_shift = float(np.clip(2.0 ** baseline_ev, 1.0, 8.0)) if baseline_ev > 0.0 else 1.0
 
-            try:
-                rgb = raw.postprocess(
-                    use_camera_wb=True,
-                    output_color=color_space_srgb,
-                    output_bps=8,
-                    no_auto_bright=False,
-                    auto_bright_thr=0.005,
-                    exp_shift=exp_shift,
-                    exp_preserve_highlights=0.5,
-                )
-            except Exception:
-                try:
-                    rgb = raw.postprocess(
-                        use_auto_wb=True,
-                        output_color=color_space_srgb,
-                        output_bps=8,
-                        no_auto_bright=False,
-                        auto_bright_thr=0.005,
-                        exp_shift=exp_shift,
-                        exp_preserve_highlights=0.5,
-                    )
-                except Exception:
-                    rgb = raw.postprocess(
-                        use_auto_wb=True,
-                        output_color=color_space_srgb,
-                        output_bps=8,
-                    )
+def _load_raw_bgr(path: Path, auto_develop: bool = True) -> ImageArray:
+    """Load a camera RAW/DNG image as BGR uint8.
 
-            bgr = cast("ImageArray", cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
-            if auto_develop:
-                bgr = enhance_raw_photographic(bgr)
-            return bgr
-    except Exception as raw_exc:
-        logger.debug("rawpy failed to decode %s (%s), falling back to Pillow", path, raw_exc)
-        try:
-            from PIL import Image, ImageOps
+    In order: the neutral development (when *auto_develop*), the JPEG embedded
+    by the camera, the neutral development when it was not asked for but there
+    is no preview, and Pillow for the DNG files LibRaw does not read.
+    """
+    developed = _develop_raw_file(path) if auto_develop else None
+    if developed is not None:
+        return rgb_to_bgr(np.asarray(developed))
+    preview = _raw_preview_bgr(path)
+    if preview is not None:
+        return preview
+    if not auto_develop:
+        developed = _develop_raw_file(path)
+        if developed is not None:
+            return rgb_to_bgr(np.asarray(developed))
+    return _load_pillow_raw_bgr(path)
 
-            with Image.open(path) as img:
-                transposed = _pil_to_srgb(ImageOps.exif_transpose(img))
-                rgb = np.array(transposed.convert("RGB"), dtype=np.uint8)
-                return cast("ImageArray", cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
-        except Exception as exc:
-            raise ValueError(f"Failed to decode RAW image {path}: {exc}") from exc
+
+def _load_pillow_raw_bgr(path: Path) -> ImageArray:
+    """Last resort for a DNG file LibRaw does not read: its first picture, through Pillow."""
+    try:
+        from PIL import Image, ImageOps
+
+        with Image.open(path) as img:
+            transposed = _pil_to_srgb(ImageOps.exif_transpose(img))
+            rgb = np.array(transposed.convert("RGB"), dtype=np.uint8)
+            return cast("ImageArray", cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+    except Exception as exc:
+        raise ValueError(f"Failed to decode RAW image {path}: {exc}") from exc
 
 
 def _load_standard_bgr(path: Path) -> ImageArray:
@@ -490,14 +774,15 @@ def load_image_bgr(path: str | Path, auto_develop_raw: bool = True) -> ImageArra
     Supports:
     - Standard raster formats (.jpg, .png, .tiff, .webp, .bmp, etc.)
     - Apple / Mobile HEIC/HEIF (.heic, .heif, .hif)
-    - Camera RAW & DNG (.cr2, .cr3, .nef, .arw, .raf, .rw2, .orf, .pef, .dng, etc.)
-      with automatic photographic tone-mapping and exposure enhancement.
+    - Camera RAW & DNG (.cr2, .cr3, .nef, .arw, .raf, .rw2, .orf, .pef, .dng, etc.),
+      developed on a neutral base (see :func:`develop_raw_linear`).
 
     Args:
         path: Path to the image file.
-        auto_develop_raw: If True, applies photographic tone curves, exposure compensation,
-            and vibrance enhancement to camera RAW / DNG files so they display with natural
-            brightness and contrast rather than appearing flat and dark.
+        auto_develop_raw: If True, a RAW / DNG file is demosaiced and developed here
+            with fixed settings, the same for every picture.  If False (or when the
+            file cannot be demosaiced), the JPEG embedded by the camera is used,
+            with the camera's own look.
 
     Returns:
         BGR image of shape ``(H, W, 3)``, dtype ``uint8``.

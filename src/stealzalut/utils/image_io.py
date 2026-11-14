@@ -351,8 +351,12 @@ _TAG_PROFILE_GAIN_TABLE_MAP = 52525
 
 #: BaselineExposure outside this range (EV) is taken for a broken tag.
 BASELINE_EXPOSURE_RANGE = (-4.0, 4.0)
-#: Linear value above which a positive exposure rolls off instead of clipping.
-EXPOSURE_KNEE = 0.8
+#: Black point of the development, as a share of the exposed range.  Lightroom
+#: subtracts one with every slider at zero.  Measured against an Adobe Standard
+#: export of Lightroom Classic 15.6 (one Apple ProRAW night scene, 400 000
+#: pixels): 0.0043 on either half of the picture.  Without it the shadows come
+#: out 0.03 of Oklab lightness too bright.
+RAW_BLACK_POINT = 0.0043
 
 #: Default base tone curve of Adobe Camera Raw ("ACR3"), linear in → linear out,
 #: sampled every 1/128 from ``dng_tone_curve_acr3_default`` of the Adobe DNG
@@ -461,26 +465,20 @@ def _read_dng_baseline_exposure(path: Path) -> float:
 def exposure_curve(value: NDArray[np.float64], exposure_ev: float) -> NDArray[np.float64]:
     """Apply *exposure_ev* stops to linear values in ``[0, 1]``, staying in ``[0, 1]``.
 
-    A fixed function of the value, increasing, with 0 → 0 and 1 → 1 for any
-    non-zero exposure:
+    A fixed function of the value, as in the Adobe DNG SDK:
 
-    - positive: a plain gain ``2 ** ev`` up to :data:`EXPOSURE_KNEE`, then a
-      shoulder with the same slope at the knee that reaches 1 for the brightest
-      input.  A DNG whose BaselineExposure is large (+1.6 EV on Apple ProRAW,
-      which counts on its gain table map to pull the highlights back) keeps
-      its highlights instead of losing everything above ``2 ** -ev``;
-    - negative: the darkening of the DNG SDK (``dng_function_exposure_tone``),
-      a slope ``2 ** ev`` up to 0.25 and a parabola that still maps 1 to 1.
+    - positive: a gain ``2 ** ev``, clipped at white
+      (``dng_function_exposure_ramp``).  On a file whose BaselineExposure is
+      large (+1.6 EV on Apple ProRAW, which counts on its gain table map to
+      pull the highlights back) everything above ``2 ** -ev`` is white, and
+      that is what Lightroom shows on Adobe Standard: a shoulder that kept
+      those highlights was measured *further* from it than the plain clip;
+    - negative: the darkening of ``dng_function_exposure_tone``, a slope
+      ``2 ** ev`` up to 0.25 and a parabola that still maps 1 to 1.
     """
     value = np.clip(value, 0.0, 1.0)
     if exposure_ev > 0.0:
-        gain = 2.0**exposure_ev
-        lifted = value * gain
-        knee = EXPOSURE_KNEE
-        power = (gain - knee) / (1.0 - knee)
-        over = np.clip((lifted - knee) / (gain - knee), 0.0, 1.0)
-        shoulder = knee + (1.0 - knee) * (1.0 - (1.0 - over) ** power)
-        return cast("NDArray[np.float64]", np.where(lifted <= knee, lifted, shoulder))
+        return cast("NDArray[np.float64]", np.minimum(value * 2.0**exposure_ev, 1.0))
     if exposure_ev < 0.0:
         slope = 2.0**exposure_ev
         a = 16.0 / 9.0 * (1.0 - slope)
@@ -501,12 +499,12 @@ def develop_raw_linear(
 ) -> NDArray[np.float64]:
     """Neutral development of demosaiced pixels: linear ProPhoto in, linear ProPhoto out.
 
-    Two fixed steps, the same for every picture (nothing is measured on it):
+    Three fixed steps, the same for every picture (nothing is measured on it):
 
-    1. the file's BaselineExposure (:func:`exposure_curve`), as a scale of the
-       three channels by what it does to the largest one, so that hue and
-       saturation are untouched;
-    2. Adobe's default base curve (:func:`base_curve`) with the DNG rule for
+    1. the file's BaselineExposure, on each channel (:func:`exposure_curve`);
+    2. a black point (:data:`RAW_BLACK_POINT`) taken off the largest channel,
+       the two others scaled alike, so that it darkens without saturating;
+    3. Adobe's default base curve (:func:`base_curve`) with the DNG rule for
        curves: the largest and the smallest channel go through the curve, the
        middle one keeps its relative position between them.  Hue is constant
        in the working space; there is no saturation or vibrance step.
@@ -518,12 +516,11 @@ def develop_raw_linear(
     Returns:
         ``(N, 3)`` linear ProPhoto RGB in ``[0, 1]``, ready to be encoded.
     """
-    rgb = np.clip(np.asarray(linear_prophoto, dtype=np.float64), 0.0, 1.0)
+    rgb = exposure_curve(np.asarray(linear_prophoto, dtype=np.float64), baseline_exposure)
     largest = rgb.max(axis=1, keepdims=True)
-    if baseline_exposure != 0.0:
-        exposed = exposure_curve(largest, baseline_exposure)
-        rgb = rgb * np.divide(exposed, largest, out=np.ones_like(largest), where=largest > 0.0)
-        largest = exposed
+    lowered = np.clip((largest - RAW_BLACK_POINT) / (1.0 - RAW_BLACK_POINT), 0.0, 1.0)
+    rgb = rgb * np.divide(lowered, largest, out=np.zeros_like(largest), where=largest > 0.0)
+    largest = lowered
     smallest = rgb.min(axis=1, keepdims=True)
     top, bottom = base_curve(largest), base_curve(smallest)
     span = largest - smallest
@@ -556,9 +553,7 @@ def _demosaic_linear(raw: Any) -> NDArray[np.uint16]:
     return linear
 
 
-def _develop_rows(
-    rows: NDArray[np.uint16], baseline_exposure: float
-) -> NDArray[np.float32]:
+def _develop_rows(rows: NDArray[np.uint16], baseline_exposure: float) -> NDArray[np.float32]:
     """:func:`develop_raw_linear` on 16-bit pixels, through tables (fast path).
 
     The exposure and the curve are functions of one value: they are tabulated
@@ -566,20 +561,23 @@ def _develop_rows(
     function to within the 16-bit step.
     """
     levels = np.arange(65536, dtype=np.float64) / 65535.0
-    exposed = exposure_curve(levels, baseline_exposure)
-    ratio = np.divide(exposed, levels, out=np.ones_like(levels), where=levels > 0.0)
+    exposed = exposure_curve(levels, baseline_exposure).astype(np.float32)
     curve = base_curve(levels).astype(np.float32)
-    top_table = base_curve(exposed).astype(np.float32)
 
-    largest = rows.max(axis=2)
-    smallest = rows.min(axis=2)
-    top = top_table[largest]
-    low = np.rint(smallest * ratio.astype(np.float32)[largest]).astype(np.uint16)
-    bottom = curve[low]
-    span = (largest - smallest).astype(np.float32)
-    scale = np.divide(top - bottom, span, out=np.zeros_like(span), where=span > 0.0)
-    offset = (rows - smallest[..., None]).astype(np.float32)
-    return cast("NDArray[np.float32]", bottom[..., None] + offset * scale[..., None])
+    rgb = exposed[rows]
+    largest = rgb.max(axis=2)
+    lowered = np.clip((largest - RAW_BLACK_POINT) / (1.0 - RAW_BLACK_POINT), 0.0, 1.0)
+    scale = np.divide(lowered, largest, out=np.zeros_like(largest), where=largest > 0.0)
+    rgb *= scale[..., None]
+    smallest = rgb.min(axis=2)
+    top = curve[np.rint(lowered * 65535.0).astype(np.uint16)]
+    bottom = curve[np.rint(smallest * 65535.0).astype(np.uint16)]
+    span = lowered - smallest
+    slope = np.divide(top - bottom, span, out=np.zeros_like(span), where=span > 0.0)
+    rgb -= smallest[..., None]
+    rgb *= slope[..., None]
+    rgb += bottom[..., None]
+    return rgb
 
 
 def develop_raw_pixels(linear16: NDArray[np.uint16], baseline_exposure: float = 0.0) -> WideImage:

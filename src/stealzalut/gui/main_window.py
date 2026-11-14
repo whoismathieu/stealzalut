@@ -137,11 +137,13 @@ _ANALYSING_MESSAGE = "Analyse des zones de couleur…"
 #: Shown when the RAW source was developed here (see ``image_io.develop_raw_linear``).
 _RAW_DEVELOPED_HINT = (
     "La source est un fichier RAW, développé ici sur une base neutre : exposition de base "
-    "du fichier et courbe de base d'Adobe, sans aucun réglage automatique. C'est le socle "
-    "d'un profil neutre (Adobe Standard, curseurs à zéro), mais ce n'est pas le rendu exact "
-    "de ton logiciel : sa matrice couleur et sa gestion des hautes lumières diffèrent, et "
-    "l'écart n'a pas été mesuré. Pour un .cube exact, exporte la photo depuis ton logiciel "
-    "sur ce profil neutre (JPEG ou TIFF, Display P3) et utilise cet export comme source."
+    "du fichier, point noir et courbe de base d'Adobe, sans aucun réglage automatique. "
+    "Comparé à Lightroom Classic sur Adobe Standard, curseurs à zéro : même luminosité "
+    "dans les ombres et les tons moyens ; les hautes lumières s'en écartent davantage, "
+    "Lightroom les retient et les désature zone par zone. Mesuré sur un seul fichier "
+    "(ProRAW d'iPhone) : pour un autre appareil, ou pour un .cube exact, exporte la photo "
+    "depuis ton logiciel sur ce profil neutre (JPEG ou TIFF, Display P3) et utilise cet "
+    "export comme source."
 )
 #: Shown when the RAW source could only be read through the camera's embedded JPEG.
 _RAW_PREVIEW_HINT = (

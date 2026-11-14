@@ -15,8 +15,8 @@ from PIL import Image
 from stealzalut.core.rgb_spaces import DISPLAY_P3, PROPHOTO_RGB, SRGB
 from stealzalut.utils.image_io import (
     ACR3_BASE_CURVE,
-    EXPOSURE_KNEE,
     HEIC_EXTENSIONS,
+    RAW_BLACK_POINT,
     RAW_EXTENSIONS,
     RENDERING_CAMERA_PREVIEW,
     RENDERING_FILE,
@@ -321,32 +321,45 @@ class TestNeutralRawDevelopment:
         # and the channels keep their order
         assert np.allclose(position(out), position(rgb), atol=1e-9)
         assert np.array_equal(np.argsort(out, axis=1), np.argsort(rgb, axis=1))
-        # the extreme channels are exactly the curve of what they were
-        assert np.allclose(out.max(axis=1), base_curve(rgb.max(axis=1)))
-        assert np.allclose(out.min(axis=1), base_curve(rgb.min(axis=1)))
+        # the extreme channels are exactly the curve of what they were, once
+        # the black point is taken off the largest and the others follow
+        largest = rgb.max(axis=1)
+        lowered = (largest - RAW_BLACK_POINT) / (1.0 - RAW_BLACK_POINT)
+        assert np.allclose(out.max(axis=1), base_curve(lowered))
+        assert np.allclose(out.min(axis=1), base_curve(rgb.min(axis=1) * lowered / largest))
 
-    def test_exposure_is_a_gain_then_a_shoulder(self) -> None:
+    def test_the_black_point_darkens_without_saturating(self) -> None:
+        """Measured against Lightroom: shadows were 0.03 too bright without it."""
+        assert 0.003 < RAW_BLACK_POINT < 0.006
+        under = np.array([[RAW_BLACK_POINT, 0.5 * RAW_BLACK_POINT, 0.0]])
+        assert np.all(develop_raw_linear(under) == 0.0)
+        dark = np.array([[0.020, 0.012, 0.008]])
+        out = develop_raw_linear(dark)[0]
+        assert np.all(out < base_curve(dark[0]))
+        # taken off the largest channel, the others scaled alike: before the
+        # curve the ratios between channels are those of the file
+        scale = (dark[0, 0] - RAW_BLACK_POINT) / (1.0 - RAW_BLACK_POINT) / dark[0, 0]
+        assert np.allclose(out[[0, 2]], base_curve(dark[0, [0, 2]] * scale))
+
+    def test_positive_exposure_is_a_gain_clipped_at_white(self) -> None:
+        """As the DNG SDK does it, and as Lightroom shows it on Adobe Standard."""
         values = np.linspace(0.0, 1.0, 2001)
         for stops in (0.4, 1.0, 1.6152, 3.0):
             gain = 2.0**stops
             out = exposure_curve(values, stops)
-            linear = values * gain <= EXPOSURE_KNEE
-            assert np.allclose(out[linear], values[linear] * gain)
-            assert np.all(np.diff(out) >= 0.0) and out[-1] == pytest.approx(1.0)
-            assert out.max() <= 1.0
-            # no step and no kink at the knee: the slope there is still the gain
-            just_over = np.array([EXPOSURE_KNEE / gain, EXPOSURE_KNEE / gain + 1e-6])
-            slope = np.diff(exposure_curve(just_over, stops))[0] / 1e-6
-            assert slope == pytest.approx(gain, rel=1e-3)
+            assert np.allclose(out, np.minimum(values * gain, 1.0))
+            assert np.all(np.diff(out) >= 0.0) and out.max() == 1.0
 
-    def test_a_large_baseline_exposure_does_not_erase_the_highlights(self) -> None:
-        """Apple ProRAW asks for +1.6 EV: a plain gain would clip everything
-        above 33 % of the range to white."""
-        bright = np.array([0.34, 0.40, 0.50, 0.70])
-        plain = np.minimum(bright * 2.0**1.6152, 1.0)
-        assert np.all(plain == 1.0)
-        kept = exposure_curve(bright, 1.6152)
-        assert np.all(np.diff(kept) > 0.0) and kept[0] < 0.95
+    def test_a_large_baseline_exposure_whitens_the_highlights(self) -> None:
+        """Apple ProRAW asks for +1.6 EV and relies on its gain table map to
+        bring the highlights back.  Outside Apple's own profile that map is not
+        applied: everything above a third of the range is white, in Lightroom
+        too (a shoulder keeping them was measured further from it)."""
+        bright = np.repeat(np.array([[0.34], [0.50], [0.70]]), 3, axis=1)
+        assert np.all(develop_raw_linear(bright, 1.6152) == 1.0)
+        below = np.repeat(np.array([[0.05], [0.20], [0.30]]), 3, axis=1)
+        out = develop_raw_linear(below, 1.6152)[:, 0]
+        assert np.all(np.diff(out) > 0.0) and out[-1] < 1.0
 
     def test_negative_exposure_darkens_and_keeps_white(self) -> None:
         values = np.linspace(0.0, 1.0, 501)

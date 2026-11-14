@@ -59,13 +59,21 @@ To avoid the "monochrome filter" effect and the crushed highlights typical of gl
 A RAW/DNG file dropped as the source is **developed by StealZaLut on a neutral base**, the same fixed operations for every picture:
 
 1. demosaicing by LibRaw in 16-bit linear ProPhoto RGB, white balance as shot, no automatic brightening;
-2. the file's `BaselineExposure` (DNG only), as a plain gain with a shoulder so that a large value does not erase the highlights;
-3. Adobe's default base tone curve (the one a profile without a curve of its own, Adobe Standard included, is rendered with), applied at constant hue;
-4. no saturation, vibrance or contrast step, and nothing measured on the picture: a night scene stays a night scene.
+2. the file's `BaselineExposure` (DNG only), as a plain gain clipped at white;
+3. a fixed black point (0.43 % of the range);
+4. Adobe's default base tone curve (the one a profile without a curve of its own, Adobe Standard included, is rendered with), applied at constant hue;
+5. no saturation, vibrance or contrast step, and nothing measured on the picture: a night scene stays a night scene.
 
 The result enters the engine unclipped and is handed to the LUT in Display P3. The JPEG embedded by the camera (with the manufacturer's look: local tone mapping, lifted shadows, extra saturation) is only used when the file cannot be demosaiced.
 
-**How close this is to Lightroom is not measured.** The development follows what Adobe publishes (DNG SDK), but Lightroom's own Adobe Standard uses its camera matrices, its highlight recovery and, on some cameras, an exposure offset stored in its profile. On an Apple ProRAW file the gain table map that only belongs to Apple's own profile is ignored, as Lightroom does outside that profile: expect the neutral rendering to be more contrasted than the phone's picture, with brighter highlights and about a quarter less saturation. A banner in the window says which rendering the source has.
+**How close this is to Lightroom.** Measured on one file, an iPhone 15 Pro Max ProRAW night scene, against its export from Lightroom Classic 15.6 on Adobe Standard with every slider at zero (16-bit TIFF, Display P3), on 400 000 pixels:
+
+| Source read by StealZaLut | Mean lightness gap | Typical colour gap (median ΔE Oklab) | RMS ΔE | Saturation, shadows and mid-tones |
+| :--- | :---: | :---: | :---: | :---: |
+| Neutral development | 0.000 | 0.006 | 0.021 | 0.93 to 1.08 × Lightroom |
+| JPEG embedded by the phone | +0.007 | 0.039 | 0.077 | 1.24 to 1.39 × Lightroom |
+
+What remains is in the highlights (14 % of that picture): Lightroom holds and desaturates them area by area, which no fixed development reproduces, and the neutral development keeps them 1.4 × more saturated. About 0.014 of the RMS gap is Lightroom's own local processing (sharpening, noise reduction, highlights). The gain table map of a ProRAW file is ignored, as Lightroom does outside Apple's own profile: applying it puts the result ten times further away. Other cameras have not been measured: Lightroom's Adobe Standard uses its own camera matrices and, on some cameras, an exposure offset stored in its profile. A banner in the window says which rendering the source has.
 
 In Adobe Camera Raw and Lightroom:
 

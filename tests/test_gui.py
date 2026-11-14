@@ -1002,7 +1002,7 @@ class TestSourceFidelity:
             assert not window._source_hint.isHidden()
             assert label.text() == _RAW_DEVELOPED_HINT
             assert "développé ici sur une base neutre" in label.text()
-            assert "l'écart n'a pas été mesuré" in label.text()
+            assert "Mesuré sur un seul fichier" in label.text()
             assert window._source_zone.image_rgb.native_space.key == "display-p3"
 
             window._source_zone.clear_image()

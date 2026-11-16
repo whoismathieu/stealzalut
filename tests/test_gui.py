@@ -1000,6 +1000,28 @@ class TestSourceFidelity:
             assert label.text() == _RAW_DEVELOPED_HINT
             assert "développée sur une base neutre" in label.text()
             assert "Mesuré sur un seul fichier" in label.toolTip()
+
+            # The banner also says what to enter in Camera Raw, for the cube's space
+            host = window._source_hint.findChild(QLabel, "hostHintLabel")
+            for field in (
+                "Adobe Standard",
+                "Faible (normal)",
+                "Table de correspondance <b>décochée</b>",
+                "Espace <b>sRGB</b>",
+                "Gamut <b>Écrêtage</b>",
+                "Échantillons <b>32</b>",
+                "Min <b>0</b> %, Niveau <b>100</b> %, Max <b>200</b> %",
+            ):
+                assert field in host.text(), field
+            # A developed RAW is wide gamut: a sRGB cube would lose its vivid colours
+            assert "choisis plutôt <b>Display P3</b>" in host.text()
+            window._space_combo.setCurrentIndex(window._space_combo.findData("display-p3"))
+            assert "Espace <b>Display P3</b>" in host.text()
+            assert "choisis plutôt" not in host.text()
+            # Camera Raw has no Rec.709 entry: say so rather than name a wrong space
+            window._space_combo.setCurrentIndex(window._space_combo.findData("rec709-g24"))
+            assert "ne propose pas" in host.text() and "Gamut" not in host.text()
+            window._space_combo.setCurrentIndex(window._space_combo.findData("srgb"))
             assert window._source_zone.image_rgb.native_space.key == "display-p3"
 
             window._source_zone.clear_image()
@@ -1141,6 +1163,8 @@ class TestCubeSpace:
                 time.sleep(0.01)
 
             assert "Display P3" in shown[0] and "plus large que sRGB" in shown[0]
+            # Every field of Camera Raw's profile window is given a value
+            assert "Espace <b>Display P3</b>, Gamut <b>Écrêtage</b>" in shown[0]
             rows = [
                 [float(v) for v in line.split()]
                 for line in target.read_text().splitlines()

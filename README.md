@@ -87,6 +87,21 @@ In Adobe Camera Raw and Lightroom:
 1. An `.xmp` profile created from a `.cube` is built on the **Adobe Standard** base (not *Adobe Color* or *Apple ProRAW*).
 2. The 3D LUT is evaluated **after** the base profile and the tone curve, in the colour space selected when the profile was created.
 
+**The « Créer un profil » window of Camera Raw, field by field.** Open it from the Presets tab with Alt + click on the new-preset button, on a photo set to **Adobe Standard** with every slider at zero. The application shows these values in the banner of a RAW source and again when the export ends, with the space of the `.cube` you chose:
+
+| Field | Value | Why |
+| :--- | :--- | :--- |
+| Checkboxes of the upper list | none | The profile must hold the colour table only |
+| Intensité de mappage de la tonalité | **Faible (normal)** | The other value is meant for HDR pictures |
+| Table de correspondance | unchecked | Not used |
+| Table de recherche des couleurs | checked, your `.cube` | |
+| Espace | **the space of the `.cube`** (« Espace du .cube » in StealZaLut) | In another space the colours are not those of the preview |
+| Gamut | **Écrêtage** | Colours outside the space are brought into it before the table, as in the preview |
+| Échantillons | **32** | The maximum |
+| Min / Niveau / Max | **0 / 100 / 200 %** | 100 % is the `.cube` as exported; Min and Max bound the profile's amount slider |
+
+Camera Raw offers sRGB, Display P3, Adobe RGB, ProPhoto RGB and Rec. 2020 there: a `.cube` exported in Rec.709 gamma 2.4 has no matching entry. For a RAW source, export in **Display P3**. The space is what the result depends on; the Gamut value is the one consistent with how the `.cube` is built, and has not been compared with the other one in Camera Raw.
+
 **Direct workflow (RAW in, `.cube` out):** drop the RAW/DNG as the source, export the `.cube` in **Display P3**, create the profile in Camera Raw with **Display P3** as the space of the colour table, and apply it on Adobe Standard with the sliders at zero.
 
 **For an exact match between the StealZaLut preview and Lightroom** (the reference workflow, which removes the uncertainty above):

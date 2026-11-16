@@ -470,7 +470,7 @@ QStatusBar::item {
     border-radius: @radius_s;
 }
 
-#modeHintLabel {
+#modeHintLabel, #hostHintLabel {
     color: @hint_text;
     font-size: 12px;
 }

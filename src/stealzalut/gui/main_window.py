@@ -7,6 +7,7 @@ directly — all matrix operations run in QThread workers.
 
 from __future__ import annotations
 
+import html
 import logging
 from dataclasses import replace
 from functools import partial
@@ -95,7 +96,7 @@ from stealzalut.core.recipe import (
     parse_recipe,
     recipe_to_dict,
 )
-from stealzalut.core.rgb_spaces import CUBE_SPACES, SRGB, RGBSpace
+from stealzalut.core.rgb_spaces import ADOBE_RGB, CUBE_SPACES, DISPLAY_P3, SRGB, RGBSpace
 from stealzalut.core.zone_transfer import (
     Conflict,
     ZoneBakeParams,
@@ -168,6 +169,58 @@ _RAW_PREVIEW_DETAIL = (
     "Pour un résultat exact : dans ton logiciel, passe sur un profil neutre (ex. Adobe "
     "Standard) avec les curseurs à zéro, exporte la photo (JPEG ou TIFF) et utilise cet "
     "export ici."
+)
+
+
+#: Spaces the « Créer un profil » window of Camera Raw offers for a colour table.
+_CAMERA_RAW_SPACES = (SRGB, DISPLAY_P3, ADOBE_RGB)
+
+
+def camera_raw_profile_settings(space: RGBSpace, wide_source: bool = False) -> str:
+    """What to enter in Camera Raw's « Créer un profil » window for a .cube in *space*.
+
+    Rich text, with the values to pick in bold.  Every field of the window is
+    named, so that none is left to chance: the space must be the cube's, the
+    others are the values with which the profile renders the cube as exported.
+
+    Args:
+        space: Space the .cube is exported in.
+        wide_source: The source holds colours outside sRGB (a developed RAW,
+            a Display P3 file): a sRGB cube would bring them back into sRGB.
+    """
+    if space not in _CAMERA_RAW_SPACES:
+        return (
+            f"<b>Profil Camera Raw :</b> sa fenêtre « Créer un profil » ne propose pas "
+            f"{space.label}. Choisis ici <b>Display P3</b> dans « Espace du .cube » avant "
+            "d'exporter."
+        )
+    text = (
+        "<b>Profil Camera Raw</b> (fenêtre « Créer un profil ») : photo sur le profil "
+        "<b>Adobe Standard</b>, curseurs à zéro · aucune case cochée dans la liste du haut · "
+        "Intensité de mappage de la tonalité <b>Faible (normal)</b> · Table de correspondance "
+        "<b>décochée</b> · Table de recherche des couleurs <b>cochée</b> avec ton .cube : "
+        f"Espace <b>{space.host_name}</b>, Gamut <b>Écrêtage</b>, Échantillons <b>32</b>, "
+        "Min <b>0</b> %, Niveau <b>100</b> %, Max <b>200</b> %."
+    )
+    if wide_source and not space.wide:
+        text += (
+            " Pour garder les couleurs vives de cette source, choisis plutôt "
+            "<b>Display P3</b> dans « Espace du .cube » ici, et le même espace dans Camera Raw."
+        )
+    return text
+
+
+_CAMERA_RAW_DETAIL = (
+    "Ouvrir la fenêtre : dans Camera Raw, onglet Paramètres prédéfinis, Alt + clic sur "
+    "« Créer un paramètre prédéfini ».\n"
+    "Espace : celui dans lequel le .cube a été exporté ici (« Espace du .cube »), sinon les "
+    "couleurs ne sont pas celles de l'aperçu.\n"
+    "Gamut « Écrêtage » : les couleurs hors de cet espace y sont ramenées avant la table, "
+    "comme dans l'aperçu.\n"
+    "Échantillons 32 : le maximum, la table n'est pas appauvrie.\n"
+    "Niveau 100 % : le .cube tel qu'il a été exporté. Min et Max sont les bornes du curseur "
+    "« Gain » du profil dans Lightroom (0 % = sans effet, 200 % = effet doublé).\n"
+    "Intensité « Faible (normal) » : l'autre valeur est réservée aux images HDR."
 )
 
 
@@ -789,6 +842,7 @@ class MainWindow(QMainWindow):
         self._algo_combo.currentIndexChanged.connect(self._on_algo_changed)
         self._size_combo.currentIndexChanged.connect(self._on_size_changed)
         self._space_combo.currentIndexChanged.connect(self._on_size_changed)
+        self._space_combo.currentIndexChanged.connect(self._update_source_hint)
 
         # Slider moved (debounced by the panel) → rebuild the grid
         self._adjustments.params_changed.connect(self._on_params_changed)
@@ -970,10 +1024,20 @@ class MainWindow(QMainWindow):
         bar.setObjectName("modeHintBar")
         layout = QHBoxLayout(bar)
         layout.setContentsMargins(10, 6, 6, 6)
+        texts = QVBoxLayout()
+        texts.setSpacing(4)
         self._source_hint_label = QLabel()
         self._source_hint_label.setObjectName("modeHintLabel")
         self._source_hint_label.setWordWrap(True)
-        layout.addWidget(self._source_hint_label, stretch=1)
+        texts.addWidget(self._source_hint_label)
+        # What to enter in Camera Raw for the .cube of this source
+        self._host_hint_label = QLabel()
+        self._host_hint_label.setObjectName("hostHintLabel")
+        self._host_hint_label.setTextFormat(Qt.TextFormat.RichText)
+        self._host_hint_label.setWordWrap(True)
+        self._host_hint_label.setToolTip(_CAMERA_RAW_DETAIL)
+        texts.addWidget(self._host_hint_label)
+        layout.addLayout(texts, stretch=1)
         close = QToolButton()
         close.setText("×")
         close.setObjectName("modeHintClose")
@@ -997,6 +1061,8 @@ class MainWindow(QMainWindow):
             self._source_hint_label.setToolTip(
                 _RAW_DEVELOPED_DETAIL if developed else _RAW_PREVIEW_DETAIL
             )
+            wide = getattr(self._source_zone.image_rgb, "native", None) is not None
+            self._host_hint_label.setText(camera_raw_profile_settings(self._cube_space(), wide))
         self._source_hint.setVisible(is_raw)
 
     # ── Correspondence editor ────────────────────────────────────────────
@@ -2031,19 +2097,18 @@ class MainWindow(QMainWindow):
         logger.info("Exported to %s", path)
 
         msg = (
-            f"LUT 3D enregistrée :\n{path}\n\n"
-            f"Ce .cube attend une image en {space.label} déjà développée, et rend "
-            f"du {space.label}.\n\n"
-            "• Lightroom / Camera Raw : à la création du profil, choisis l'espace "
-            f"« {space.host_name} » pour la table de couleurs.\n"
-            f"• DaVinci Resolve, Premiere : applique-le sur une image en {space.host_name} "
-            "(après la conversion d'espace, pas sur du log ou du brut).\n\n"
-            "Dans un autre espace, les couleurs ne seront pas celles de l'aperçu."
+            f"<p>LUT 3D enregistrée :<br>{html.escape(str(path))}</p>"
+            f"<p>Ce .cube attend une image en {space.label} déjà développée, et rend "
+            f"du {space.label}. Dans un autre espace, les couleurs ne seront pas celles "
+            "de l'aperçu.</p>"
+            f"<p>{camera_raw_profile_settings(space)}</p>"
+            f"<p><b>DaVinci Resolve, Premiere :</b> applique-le sur une image en "
+            f"{space.host_name} (après la conversion d'espace, pas sur du log ou du brut).</p>"
         )
         if space.wide:
             msg += (
-                "\n\nCet espace est plus large que sRGB : le .cube garde des couleurs "
-                "vives que l'aperçu, en sRGB, ne montre pas."
+                "<p>Cet espace est plus large que sRGB : le .cube garde des couleurs "
+                "vives que l'aperçu, en sRGB, ne montre pas.</p>"
             )
 
         QMessageBox.information(

@@ -16,7 +16,7 @@ from typing import Any
 import cv2
 import numpy as np
 from numpy.typing import NDArray
-from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtCore import QPoint, Qt, QTimer, QUrl
 from PySide6.QtGui import (
     QColor,
     QDesktopServices,
@@ -103,10 +103,17 @@ from stealzalut.core.zone_transfer import (
     find_conflicts,
 )
 from stealzalut.gui.history import EditState, History
+from stealzalut.gui.preferences import IMAGE_BACKDROP, THEME, Preferences
+from stealzalut.gui.theming import DEFAULT_THEME, apply_theme, available_themes
 from stealzalut.gui.widgets.adjustments_panel import AdjustmentsPanel
 from stealzalut.gui.widgets.correspondence_view import SOURCE, CorrespondenceView
 from stealzalut.gui.widgets.finishing_panel import FinishingPanel
 from stealzalut.gui.widgets.image_drop_zone import ImageDropZone
+from stealzalut.gui.widgets.image_view import (
+    DEFAULT_BACKDROP,
+    ImageView,
+    add_backdrop_actions,
+)
 from stealzalut.gui.widgets.paste_recipe_dialog import PasteRecipeDialog
 from stealzalut.gui.widgets.preview_panel import PreviewPanel
 from stealzalut.gui.widgets.responsive import ResponsiveRow, SplitterSection, collapse_button
@@ -136,22 +143,31 @@ _ANALYSING_MESSAGE = "Analyse des zones de couleur…"
 
 #: Shown when the RAW source was developed here (see ``image_io.develop_raw_linear``).
 _RAW_DEVELOPED_HINT = (
-    "La source est un fichier RAW, développé ici sur une base neutre : exposition de base "
-    "du fichier, point noir et courbe de base d'Adobe, sans aucun réglage automatique. "
+    "Source RAW développée sur une base neutre, proche de Lightroom sur Adobe Standard, "
+    "curseurs à zéro (hautes lumières plus saturées ici). Pour un .cube exact, utilise "
+    "comme source un export de ton logiciel. Survole ce message pour le détail."
+)
+_RAW_DEVELOPED_DETAIL = (
+    "Développement : exposition de base du fichier, point noir et courbe de base d'Adobe, "
+    "sans aucun réglage automatique.\n"
     "Comparé à Lightroom Classic sur Adobe Standard, curseurs à zéro : même luminosité "
     "dans les ombres et les tons moyens ; les hautes lumières s'en écartent davantage, "
-    "Lightroom les retient et les désature zone par zone. Mesuré sur un seul fichier "
-    "(ProRAW d'iPhone) : pour un autre appareil, ou pour un .cube exact, exporte la photo "
-    "depuis ton logiciel sur ce profil neutre (JPEG ou TIFF, Display P3) et utilise cet "
-    "export comme source."
+    "Lightroom les retient et les désature zone par zone.\n"
+    "Mesuré sur un seul fichier (ProRAW d'iPhone) : pour un autre appareil, ou pour un "
+    ".cube exact, exporte la photo depuis ton logiciel sur ce profil neutre (JPEG ou TIFF, "
+    "Display P3) et utilise cet export comme source."
 )
 #: Shown when the RAW source could only be read through the camera's embedded JPEG.
 _RAW_PREVIEW_HINT = (
-    "La source est un fichier RAW que l'application n'a pas pu développer : l'aperçu "
-    "utilise le JPEG intégré par l'appareil, avec son rendu propre, ce qui faussera les "
-    "couleurs du .cube. Pour un résultat exact : dans ton logiciel, passe sur un profil "
-    "neutre (ex. Adobe Standard) avec les curseurs à zéro, exporte la photo (JPEG ou TIFF) "
-    "et utilise cet export ici."
+    "RAW non développé : l'aperçu utilise le JPEG intégré par l'appareil, avec son rendu "
+    "propre, ce qui faussera les couleurs du .cube. Utilise plutôt comme source un export "
+    "de ton logiciel. Survole ce message pour le détail."
+)
+_RAW_PREVIEW_DETAIL = (
+    "L'application n'a pas pu développer ce fichier RAW.\n"
+    "Pour un résultat exact : dans ton logiciel, passe sur un profil neutre (ex. Adobe "
+    "Standard) avec les curseurs à zéro, exporte la photo (JPEG ou TIFF) et utilise cet "
+    "export ici."
 )
 
 
@@ -196,9 +212,13 @@ class MainWindow(QMainWindow):
         └──────────────────────────────────────────────────┘
     """
 
-    def __init__(self, settings: Settings, parent: Any = None) -> None:
+    def __init__(
+        self, settings: Settings, parent: Any = None, preferences: Preferences | None = None
+    ) -> None:
         super().__init__(parent)
         self._settings = settings
+        # Interface choices; kept in memory only when none are given
+        self._preferences = preferences if preferences is not None else Preferences()
         self._transfer_worker: TransferWorker | None = None
         self._export_worker: ExportWorker | None = None
         # Superseded preview workers still running; kept alive until they end.
@@ -227,7 +247,7 @@ class MainWindow(QMainWindow):
         # Message kept in the status bar when the next preview arrives
         self._status_note = ""
 
-        self.setWindowTitle("StealZaLut — Colour LUT Generator")
+        self.setWindowTitle("StealZaLut")
         self.setMinimumSize(900, 680)
         self.resize(1280, 940)
 
@@ -262,27 +282,27 @@ class MainWindow(QMainWindow):
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
         # Source drop zone
-        source_group = QGroupBox("Source Image")
+        source_group = QGroupBox("Source")
         source_layout = QVBoxLayout(source_group)
         self._source_zone = ImageDropZone(
-            label_text="Drop SOURCE image\nor click to browse",
+            label_text="Dépose la photo à étalonner\nou clique pour la choisir",
             max_preview=self._settings.preview_max_size,
         )
         source_layout.addWidget(self._source_zone)
         splitter.addWidget(source_group)
 
         # Reference drop zone
-        ref_group = QGroupBox("Reference Image")
+        ref_group = QGroupBox("Référence")
         ref_layout = QVBoxLayout(ref_group)
         self._reference_zone = ImageDropZone(
-            label_text="Drop REFERENCE image\nor click to browse",
+            label_text="Dépose la photo dont tu veux le rendu\nou clique pour la choisir",
             max_preview=self._settings.preview_max_size,
         )
         ref_layout.addWidget(self._reference_zone)
         splitter.addWidget(ref_group)
 
         # Preview panel
-        preview_group = QGroupBox("Transfer Preview")
+        preview_group = QGroupBox("Aperçu")
         preview_layout = QVBoxLayout(preview_group)
         self._preview = PreviewPanel(title="")
         preview_layout.addWidget(self._preview)
@@ -354,7 +374,7 @@ class MainWindow(QMainWindow):
         look_layout.setSpacing(12)
 
         # Algorithm selector
-        algo_label = QLabel("Algorithm:")
+        algo_label = QLabel("Méthode :")
         algo_label.setObjectName("controlLabel")
         controls_layout.addWidget(algo_label)
 
@@ -456,7 +476,7 @@ class MainWindow(QMainWindow):
         look_layout.addWidget(self._look_recipe_btn)
 
         # LUT size selector
-        size_label = QLabel("LUT Size:")
+        size_label = QLabel("Taille :")
         size_label.setObjectName("controlLabel")
         controls_layout.addWidget(size_label)
 
@@ -505,12 +525,12 @@ class MainWindow(QMainWindow):
         actions_layout.addWidget(self._redo_btn)
 
         # Clear button
-        self._clear_btn = QPushButton("Clear All")
+        self._clear_btn = QPushButton("Tout effacer")
         self._clear_btn.setObjectName("clearButton")
         actions_layout.addWidget(self._clear_btn)
 
         # Export button (.cube)
-        self._export_btn = QPushButton("Export .cube")
+        self._export_btn = QPushButton("Exporter le .cube")
         self._export_btn.setObjectName("exportButton")
         self._export_btn.setEnabled(False)
         self._export_btn.setToolTip("Exporter le fichier 3D LUT (.cube)")
@@ -532,15 +552,83 @@ class MainWindow(QMainWindow):
         # ── Bottom: Progress bar ─────────────────────────────────────
         self._progress_bar = QProgressBar()
         self._progress_bar.setRange(0, 100)
-        self._progress_bar.setValue(0)
-        self._progress_bar.setTextVisible(True)
+        self._progress_bar.setTextVisible(False)
         self._progress_bar.setObjectName("mainProgressBar")
+        # Hidden when idle, without the rows above moving
+        policy = self._progress_bar.sizePolicy()
+        policy.setRetainSizeWhenHidden(True)
+        self._progress_bar.setSizePolicy(policy)
+        self._set_progress(0)
         root_layout.addWidget(self._progress_bar)
 
         # Status bar
         self._status_bar = QStatusBar()
         self.setStatusBar(self._status_bar)
-        self._status_bar.showMessage("Ready — drop a source and reference image to begin.")
+        self._appearance_btn = QToolButton()
+        self._appearance_btn.setText("Apparence ▾")
+        self._appearance_btn.setObjectName("appearanceButton")
+        self._appearance_btn.setToolTip("Thème de l'application et fond des images")
+        self._appearance_btn.clicked.connect(self._open_appearance_menu)
+        self._status_bar.addPermanentWidget(self._appearance_btn)
+        self._status_bar.setSizeGripEnabled(False)
+        for view in self._image_views():
+            view.backdrop_chosen.connect(self._set_image_backdrop)
+        self._set_image_backdrop(self._preferences.get(IMAGE_BACKDROP, DEFAULT_BACKDROP))
+        self._status_bar.showMessage(
+            "Dépose une image source et une image de référence pour commencer."
+        )
+
+    def _set_progress(self, percent: int) -> None:
+        """Show the progress of a running task; the bar disappears at 0 and at 100."""
+        self._progress_bar.setValue(percent)
+        self._progress_bar.setVisible(0 < percent < 100)
+
+    # ── Appearance: theme and image backdrop ─────────────────────────────
+
+    def _image_views(self) -> list[ImageView]:
+        return [self._source_zone.view, self._reference_zone.view, self._preview.view]
+
+    def _set_image_backdrop(self, key: str) -> None:
+        """Put the same grey behind the three images, and remember it."""
+        for view in self._image_views():
+            view.set_backdrop(key)
+        self._preferences.set(IMAGE_BACKDROP, self._source_zone.view.backdrop)
+
+    def _set_theme(self, key: str) -> None:
+        app = QApplication.instance()
+        if isinstance(app, QApplication) and apply_theme(app, key) is not None:
+            self._preferences.set(THEME, key)
+
+    def _appearance_menu(self) -> QMenu:
+        """Themes found on disk, then the greys behind the images."""
+        menu = QMenu(self)
+        title = menu.addAction("Thème")
+        title.setEnabled(False)
+        current = self._preferences.get(THEME, self._settings.app_theme)
+        try:
+            themes = available_themes()
+        except ValueError:
+            themes = {}
+        if current not in themes:
+            current = DEFAULT_THEME
+        for key, theme in themes.items():
+            action = menu.addAction(theme.name)
+            action.setCheckable(True)
+            action.setChecked(key == current)
+            action.setData(key)
+            action.triggered.connect(lambda _checked=False, k=key: self._set_theme(k))
+        menu.addSeparator()
+        add_backdrop_actions(menu, self._source_zone.view.backdrop, self._set_image_backdrop)
+        return menu
+
+    def _open_appearance_menu(self) -> None:
+        # Popped up by hand, like the other menus (Qt font warning with setMenu)
+        menu = self._appearance_menu()
+        height = menu.sizeHint().height()
+        menu.exec(
+            self._appearance_btn.mapToGlobal(self._appearance_btn.rect().topLeft())
+            - QPoint(0, height)
+        )
 
     def _build_correspondence_panel(self) -> QGroupBox:
         """Correspondence editor: toolbar, conflict banner, view and inspector."""
@@ -788,15 +876,15 @@ class MainWindow(QMainWindow):
         self._drop_zone_editor()
         self._update_export_button_state()
         self._preview.clear()
-        self._progress_bar.setValue(0)
+        self._set_progress(0)
 
     def _on_clear_all(self) -> None:
         """Clear both images and the preview."""
         self._source_zone.clear_image()
         self._reference_zone.clear_image()
         self._preview.clear()
-        self._progress_bar.setValue(0)
-        self._status_bar.showMessage("Cleared — ready for new images.")
+        self._set_progress(0)
+        self._status_bar.showMessage("Tout est effacé.")
 
     def _on_export_clicked(self) -> None:
         """Open a save dialog and start the .cube export worker."""
@@ -904,8 +992,10 @@ class MainWindow(QMainWindow):
         )
         rendering = getattr(self._source_zone.image_rgb, "rendering", RENDERING_FILE)
         if is_raw:
-            self._source_hint_label.setText(
-                _RAW_DEVELOPED_HINT if rendering == RENDERING_NEUTRAL_RAW else _RAW_PREVIEW_HINT
+            developed = rendering == RENDERING_NEUTRAL_RAW
+            self._source_hint_label.setText(_RAW_DEVELOPED_HINT if developed else _RAW_PREVIEW_HINT)
+            self._source_hint_label.setToolTip(
+                _RAW_DEVELOPED_DETAIL if developed else _RAW_PREVIEW_DETAIL
             )
         self._source_hint.setVisible(is_raw)
 
@@ -1784,8 +1874,8 @@ class MainWindow(QMainWindow):
         # A newer request supersedes any preview still being computed
         self._retire_transfer_worker()
 
-        self._status_bar.showMessage(f"Computing colour transfer preview ({method})…")
-        self._progress_bar.setValue(0)
+        self._status_bar.showMessage(f"Calcul de l'aperçu ({method})…")
+        self._set_progress(0)
 
         key = self._method_key()
         raw_model = self._cached_model(source, reference, key)
@@ -1873,22 +1963,22 @@ class MainWindow(QMainWindow):
         self._last_grid_result = result
 
     def _on_transfer_progress(self, pct: int) -> None:
-        self._progress_bar.setValue(pct)
+        self._set_progress(pct)
 
     def _on_transfer_result(self, result: NDArray[np.uint8]) -> None:
         self._last_render = result  # as emitted: may carry its unclipped colours
         self._preview.set_image(result)
-        self._progress_bar.setValue(100)
+        self._set_progress(100)
         grid_result = self._last_grid_result
         if grid_result is not None and grid_result.auto_smoothed:
             self._status_bar.showMessage(
-                f"Preview ready — lissage relevé automatiquement à "
+                f"Aperçu prêt — lissage relevé automatiquement à "
                 f"{grid_result.smoothing_used:.2f} pour éviter des inversions de luminosité."
             )
         elif self._status_note:
             self._status_bar.showMessage(self._status_note)
         else:
-            self._status_bar.showMessage("Preview ready — click 'Export .cube' to save.")
+            self._status_bar.showMessage("Aperçu prêt.")
         self._status_note = ""
         logger.info("Transfer preview displayed")
 
@@ -1907,10 +1997,8 @@ class MainWindow(QMainWindow):
 
         # Disable export during processing
         self._export_btn.setEnabled(False)
-        self._status_bar.showMessage(
-            f"Exporting 3D LUT ({method}) to {output_path.name}…"
-        )
-        self._progress_bar.setValue(0)
+        self._status_bar.showMessage(f"Exporting 3D LUT ({method}) to {output_path.name}…")
+        self._set_progress(0)
 
         title = output_path.stem
         self._exported_space = self._cube_space()
@@ -1933,10 +2021,10 @@ class MainWindow(QMainWindow):
         self._export_worker.start()
 
     def _on_export_progress(self, pct: int) -> None:
-        self._progress_bar.setValue(pct)
+        self._set_progress(pct)
 
     def _on_export_result(self, path_str: str) -> None:
-        self._progress_bar.setValue(100)
+        self._set_progress(100)
         path = Path(path_str)
         space = self._exported_space
         self._status_bar.showMessage(f"Exporté ({space.label}) : {path.name}")
@@ -1972,8 +2060,8 @@ class MainWindow(QMainWindow):
 
     def _on_worker_error(self, message: str) -> None:
         """Display an error message from a worker."""
-        self._progress_bar.setValue(0)
-        self._status_bar.showMessage(f"Error: {message}")
+        self._set_progress(0)
+        self._status_bar.showMessage(f"Erreur : {message}")
         logger.error("Worker error: %s", message)
 
         QMessageBox.critical(self, "Error", message)
@@ -1984,9 +2072,7 @@ class MainWindow(QMainWindow):
     def _update_export_button_state(self) -> None:
         """Enable the export button only when both images are loaded."""
         both_loaded = self._source_zone.has_image and self._reference_zone.has_image
-        not_exporting = (
-            self._export_worker is None or not self._export_worker.isRunning()
-        )
+        not_exporting = self._export_worker is None or not self._export_worker.isRunning()
         is_enabled = both_loaded and not_exporting
         self._export_btn.setEnabled(is_enabled)
         self._export_image_btn.setEnabled(both_loaded)

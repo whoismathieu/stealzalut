@@ -1,0 +1,29 @@
+{
+  "name": "Noir",
+  "tokens": {
+    "bg": "#000000",
+    "surface": "#0a0a0a",
+    "inset": "#000000",
+    "raised": "#141414",
+    "raised_hover": "#1f1f1f",
+    "border": "#262626",
+    "panel_border": "#1c1c1c",
+    "text": "#ededed",
+    "dim": "#a1a1a1",
+    "mute": "#666666",
+    "accent": "#ededed",
+    "accent_hover": "#ffffff",
+    "accent_press": "#c8c8c8",
+    "accent_text": "#000000",
+    "sel": "#333333",
+    "radius": "8px",
+    "groove": "#262626",
+    "handle": "#ededed",
+    "hint_bg": "#0f0f0f",
+    "hint_text": "#b4b4b4",
+    "warn_bg": "#1a1408",
+    "warn_text": "#e6c27a",
+    "warn": "#b98a2e",
+    "note": "#a1a1a1"
+  }
+}

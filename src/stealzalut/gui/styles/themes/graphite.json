@@ -1,0 +1,30 @@
+{
+  "name": "Graphite",
+  "tokens": {
+    "bg": "#1b1b1c",
+    "surface": "#242425",
+    "inset": "#141415",
+    "raised": "#2f2f31",
+    "raised_hover": "#3a3a3d",
+    "border": "#343436",
+    "panel_border": "transparent",
+    "text": "#e8e8ea",
+    "dim": "#a3a3a8",
+    "mute": "#6d6d73",
+    "accent": "#5b8def",
+    "accent_hover": "#74a0f5",
+    "accent_press": "#4877d3",
+    "accent_text": "#ffffff",
+    "sel": "#2f4470",
+    "radius": "10px",
+    "radius_s": "6px",
+    "groove": "#3a3a3d",
+    "handle": "#e8e8ea",
+    "hint_bg": "#1f2a40",
+    "hint_text": "#c9d6f2",
+    "warn_bg": "#3a2c17",
+    "warn_text": "#f3cf96",
+    "warn": "#e0a04a",
+    "note": "#b8a6f0"
+  }
+}

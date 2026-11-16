@@ -367,7 +367,6 @@ class TestMainWindow:
             window.stop_workers()
 
 
-
 # ── AdjustmentsPanel tests ───────────────────────────────────────────────────
 
 
@@ -451,8 +450,10 @@ class TestModelCache:
                 window._run_transfer_preview()
                 worker = window._transfer_worker
                 deadline = time.monotonic() + 15
-                while worker is not None and time.monotonic() < deadline and (
-                    worker.isRunning() or not worker.isFinished()
+                while (
+                    worker is not None
+                    and time.monotonic() < deadline
+                    and (worker.isRunning() or not worker.isFinished())
                 ):
                     qapp.processEvents()
                     time.sleep(0.01)
@@ -511,9 +512,7 @@ class TestSeparationSlider:
         finally:
             window.stop_workers()
 
-    def test_separation_is_undoable(
-        self, qapp: QApplication, default_settings: Settings
-    ) -> None:
+    def test_separation_is_undoable(self, qapp: QApplication, default_settings: Settings) -> None:
         window = MainWindow(settings=default_settings)
         try:
             window._algo_combo.setCurrentIndex(window._algo_combo.findData("look"))
@@ -945,9 +944,7 @@ class TestWindowLookPack:
         finally:
             window.stop_workers()
 
-    def test_look_pack_needs_a_render(
-        self, qapp: QApplication, default_settings: Settings
-    ) -> None:
+    def test_look_pack_needs_a_render(self, qapp: QApplication, default_settings: Settings) -> None:
         window = MainWindow(settings=default_settings)
         try:
             window._algo_combo.setCurrentIndex(window._algo_combo.findData("look"))
@@ -1001,8 +998,8 @@ class TestSourceFidelity:
                 assert window._source_zone.load_from_path(raw_path)
             assert not window._source_hint.isHidden()
             assert label.text() == _RAW_DEVELOPED_HINT
-            assert "développé ici sur une base neutre" in label.text()
-            assert "Mesuré sur un seul fichier" in label.text()
+            assert "développée sur une base neutre" in label.text()
+            assert "Mesuré sur un seul fichier" in label.toolTip()
             assert window._source_zone.image_rgb.native_space.key == "display-p3"
 
             window._source_zone.clear_image()

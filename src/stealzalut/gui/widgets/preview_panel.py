@@ -52,10 +52,11 @@ class PreviewPanel(QWidget):
         self._title_label = QLabel(title)
         self._title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._title_label.setObjectName("previewTitle")
+        self._title_label.setVisible(bool(title))  # no empty line above the image
         layout.addWidget(self._title_label)
 
         # Image label
-        self._image_label = ImageView("No preview available")
+        self._image_label = ImageView("L'aperçu apparaîtra ici")
         self._image_label.setMinimumSize(200, 160)
         self._image_label.setObjectName("previewImage")
         layout.addWidget(self._image_label)

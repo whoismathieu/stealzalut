@@ -82,7 +82,7 @@ class ImageDropZone(QWidget):
 
     def __init__(
         self,
-        label_text: str = "Drop image here\nor click to browse",
+        label_text: str = "Dépose une image\nou clique pour la choisir",
         max_preview: int = 280,
         parent: Any = None,
     ) -> None:
@@ -276,4 +276,3 @@ class ImageDropZone(QWidget):
 
     def _show_rgb(self, rgb: NDArray[np.uint8]) -> None:
         self._label.set_rgb(rgb)
-

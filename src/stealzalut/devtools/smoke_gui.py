@@ -20,7 +20,8 @@ from pathlib import Path
 
 from stealzalut.config import load_settings
 from stealzalut.gui.main_window import MainWindow
-from stealzalut.main import create_application, load_stylesheet
+from stealzalut.gui.theming import DEFAULT_THEME, apply_theme
+from stealzalut.main import create_application
 
 #: Width the controls row must fit in.
 WINDOW_SIZE = (1280, 800)
@@ -36,7 +37,7 @@ def main(argv: list[str]) -> int:
     out.mkdir(parents=True, exist_ok=True)
 
     app = create_application([])
-    load_stylesheet(app)
+    apply_theme(app, DEFAULT_THEME)
     window = MainWindow(settings=load_settings(None))
     window.resize(*WINDOW_SIZE)
     window.show()

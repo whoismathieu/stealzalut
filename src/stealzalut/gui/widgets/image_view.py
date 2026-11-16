@@ -1,23 +1,36 @@
 """Image display that can be zoomed and panned.
 
 The image is fitted to the widget; the wheel zooms around the pointer, a
-drag moves the zoomed image, a right click comes back to the whole image.
+drag moves the zoomed image, a click on the wheel comes back to the whole
+image.  A right click opens a menu: whole image, and the grey behind the
+image (the six levels Lightroom offers).
 Two views can be kept on the same area (source and preview) through
 :attr:`ImageView.view_changed` and :meth:`ImageView.set_view`.
 
 It is a ``QLabel`` so that the stylesheet frames it and draws its
-placeholder text; the image itself is painted by hand.
+placeholder text; the image itself is painted by hand.  The backdrop is a
+stylesheet of the widget itself, which wins over the theme's.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QImage, QMouseEvent, QPainter, QPaintEvent, QPixmap, QWheelEvent
-from PySide6.QtWidgets import QLabel, QSizePolicy
+from PySide6.QtGui import (
+    QAction,
+    QContextMenuEvent,
+    QImage,
+    QMouseEvent,
+    QPainter,
+    QPaintEvent,
+    QPixmap,
+    QWheelEvent,
+)
+from PySide6.QtWidgets import QLabel, QMenu, QSizePolicy
 
 #: Zoom range, 1 being the whole image fitted to the widget.
 ZOOM_RANGE = (1.0, 16.0)
@@ -26,7 +39,40 @@ ZOOM_STEP = 1.25
 #: Pointer travel (px) from which a press is a drag, not a click.
 DRAG_THRESHOLD = 4
 
-ZOOM_TOOLTIP = "Molette : zoomer · glisser : déplacer · clic droit : image entière"
+ZOOM_TOOLTIP = (
+    "Molette : zoomer · glisser : déplacer · clic molette : image entière · clic droit : menu"
+)
+
+#: Greys offered behind an image, by key: label and level (0-255).  The same
+#: six as Lightroom's « Couleur d'arrière-plan », levels read off its swatches.
+BACKDROPS: dict[str, tuple[str, int]] = {
+    "white": ("Blanc", 255),
+    "light": ("Gris clair", 211),
+    "medium": ("Gris moyen", 129),
+    "dark": ("Gris foncé", 62),
+    "darker": ("Gris très foncé", 34),
+    "black": ("Noir", 0),
+}
+DEFAULT_BACKDROP = "darker"
+
+
+def add_backdrop_actions(menu: QMenu, current: str, choose: Callable[[str], None]) -> None:
+    """Append the backdrop choices to *menu*, *current* ticked.
+
+    Args:
+        menu: Menu to fill.
+        current: Key of the backdrop in use.
+        choose: Called with the key of the entry the user picks.
+    """
+    title = menu.addAction("Couleur d'arrière-plan")
+    title.setEnabled(False)
+    for key, (label, _level) in BACKDROPS.items():
+        action = QAction(label, menu)
+        action.setCheckable(True)
+        action.setChecked(key == current)
+        action.setData(key)
+        action.triggered.connect(lambda _checked=False, k=key: choose(k))
+        menu.addAction(action)
 
 
 class ImageView(QLabel):
@@ -36,10 +82,14 @@ class ImageView(QLabel):
         clicked: A left click that was not a drag.
         view_changed (float, float, float): Zoom and centre (fractions of the
             image width and height) after the user zoomed or panned.
+        backdrop_chosen (str): Key of the backdrop picked in the menu.  The
+            view does not change its own: whoever listens decides which
+            views follow (:meth:`set_backdrop`).
     """
 
     clicked = Signal()
     view_changed = Signal(float, float, float)
+    backdrop_chosen = Signal(str)
 
     def __init__(self, placeholder: str = "", parent: Any = None) -> None:
         super().__init__(placeholder, parent)
@@ -49,9 +99,11 @@ class ImageView(QLabel):
         self._centre = (0.5, 0.5)
         self._press: QPointF | None = None
         self._dragged = False
+        self._backdrop = DEFAULT_BACKDROP
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setWordWrap(True)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.set_backdrop(DEFAULT_BACKDROP)
 
     # ── Public API ───────────────────────────────────────────────────────
 
@@ -69,6 +121,31 @@ class ImageView(QLabel):
     def centre(self) -> tuple[float, float]:
         """Point of the image at the centre of the widget, as fractions."""
         return self._centre
+
+    @property
+    def backdrop(self) -> str:
+        """Key of the grey behind the image (see :data:`BACKDROPS`)."""
+        return self._backdrop
+
+    def set_backdrop(self, key: str) -> None:
+        """Put the grey *key* behind the image; an unknown key gives the default."""
+        if key not in BACKDROPS:
+            key = DEFAULT_BACKDROP
+        self._backdrop = key
+        level = BACKDROPS[key][1]
+        # Placeholder text readable on any of the six greys
+        text = "#2a2a2a" if level >= 128 else "#8f8f94"
+        self.setStyleSheet(f"background-color: rgb({level}, {level}, {level}); color: {text};")
+
+    def context_menu(self) -> QMenu:
+        """Menu of a right click: whole image, then the backdrop choices."""
+        menu = QMenu(self)
+        whole = menu.addAction("Image entière")
+        whole.setEnabled(self._pixmap is not None and self._zoom > 1.0)
+        whole.triggered.connect(self._show_whole_image)
+        menu.addSeparator()
+        add_backdrop_actions(menu, self._backdrop, self.backdrop_chosen.emit)
+        return menu
 
     def set_rgb(self, rgb: NDArray[np.uint8] | None) -> None:
         """Show *rgb* (``(H, W, 3)`` uint8), or the placeholder when ``None``.
@@ -102,6 +179,11 @@ class ImageView(QLabel):
         self._zoom = float(np.clip(zoom, *ZOOM_RANGE))
         self._centre = self._clamped(cx, cy)
         self.update()
+
+    def _show_whole_image(self) -> None:
+        """Reset the view on the user's request, and tell the linked views."""
+        self.reset_view()
+        self.view_changed.emit(self._zoom, *self._centre)
 
     # ── Geometry ─────────────────────────────────────────────────────────
 
@@ -178,10 +260,12 @@ class ImageView(QLabel):
         if event.button() == Qt.MouseButton.LeftButton:
             self._press = event.position()
             self._dragged = False
-        elif event.button() == Qt.MouseButton.RightButton and self._zoom > 1.0:
-            self.reset_view()
-            self.view_changed.emit(self._zoom, *self._centre)
+        elif event.button() == Qt.MouseButton.MiddleButton and self._zoom > 1.0:
+            self._show_whole_image()
         event.accept()
+
+    def contextMenuEvent(self, event: QContextMenuEvent) -> None:
+        self.context_menu().exec(event.globalPos())
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         if self._press is None or self._pixmap is None:

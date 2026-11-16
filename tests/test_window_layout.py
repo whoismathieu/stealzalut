@@ -67,10 +67,13 @@ def _problems(row: QWidget) -> list[str]:
         if ra.intersects(rb)
     ]
     found += [f"{c.objectName()} sticks out" for c, r in rects if not row.rect().contains(r)]
+    # A minimum width set on the widget (by the code or the stylesheet) is the
+    # width it accepts to shrink to; its hint only counts without one.
     found += [
         f"{c.objectName()} is squeezed"
         for c in shown
-        if c.width() < c.minimumSizeHint().width() or c.height() < c.minimumSizeHint().height()
+        if c.width() < (c.minimumWidth() or c.minimumSizeHint().width())
+        or c.height() < c.minimumSizeHint().height()
     ]
     return found
 
@@ -178,15 +181,25 @@ class TestZoom:
         QTest.mouseClick(view, Qt.MouseButton.LeftButton, pos=QPoint(150, 100))
         assert clicks == [True]
 
-    def test_a_right_click_shows_the_whole_image(self, qapp: QApplication) -> None:
+    def test_a_wheel_click_shows_the_whole_image(self, qapp: QApplication) -> None:
         view = self._view(qapp)
         _wheel(view, 6, QPointF(20, 20))
-        QTest.mouseClick(view, Qt.MouseButton.RightButton, pos=QPoint(150, 100))
+        QTest.mouseClick(view, Qt.MouseButton.MiddleButton, pos=QPoint(150, 100))
         assert view.zoom == 1.0 and view.centre == (0.5, 0.5)
 
-    def test_a_refreshed_image_keeps_the_zoom_a_new_one_resets_it(
-        self, qapp: QApplication
-    ) -> None:
+    def test_the_menu_shows_the_whole_image_when_zoomed(self, qapp: QApplication) -> None:
+        view = self._view(qapp)
+        whole = view.context_menu().actions()[0]
+        assert whole.text() == "Image entière" and not whole.isEnabled()
+        _wheel(view, 6, QPointF(20, 20))
+        moves: list[float] = []
+        view.view_changed.connect(lambda zoom, _cx, _cy: moves.append(zoom))
+        whole = view.context_menu().actions()[0]
+        assert whole.isEnabled()
+        whole.trigger()
+        assert view.zoom == 1.0 and moves == [1.0]
+
+    def test_a_refreshed_image_keeps_the_zoom_a_new_one_resets_it(self, qapp: QApplication) -> None:
         view = self._view(qapp)
         _wheel(view, 5, QPointF(40, 40))
         zoom, centre = view.zoom, view.centre

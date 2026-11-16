@@ -9,7 +9,7 @@ from PySide6.QtWidgets import QApplication
 
 from stealzalut import __version__
 from stealzalut.config import Settings
-from stealzalut.main import create_application, load_stylesheet, setup_logging
+from stealzalut.main import create_application, setup_logging
 
 
 class TestSetupLogging:
@@ -45,19 +45,3 @@ class TestApplicationBootstrap:
         assert app.applicationName() == "StealZaLut"
         assert app.applicationVersion() == __version__
         assert app.organizationName() == "StealZaLut"
-
-    def test_load_stylesheet_existing(self) -> None:
-        app = create_application([])
-        load_stylesheet(app, "theme.qss")
-        # Should have applied a stylesheet containing dark theme rules
-        assert len(app.styleSheet()) > 0
-        assert "#1a1b1e" in app.styleSheet()
-
-    def test_load_stylesheet_missing_does_not_crash(self) -> None:
-        app = create_application([])
-        # Reset stylesheet
-        app.setStyleSheet("")
-        load_stylesheet(app, "nonexistent.qss")
-        # Should smoothly log warning and leave stylesheet empty
-        assert app.styleSheet() == ""
-

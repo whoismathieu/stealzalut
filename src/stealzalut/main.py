@@ -18,7 +18,8 @@ from PySide6.QtWidgets import QApplication
 from stealzalut import __version__
 from stealzalut.config import Settings, load_settings
 from stealzalut.gui.main_window import MainWindow
-from stealzalut.utils.paths import get_styles_path
+from stealzalut.gui.preferences import THEME, Preferences
+from stealzalut.gui.theming import apply_theme
 
 logger = logging.getLogger("stealzalut")
 
@@ -41,20 +42,6 @@ def setup_logging(settings: Settings) -> None:
         handlers=handlers,
         force=True,
     )
-
-
-def load_stylesheet(app: QApplication, filename: str = "theme.qss") -> None:
-    """Load and apply a Qt stylesheet to the application."""
-    try:
-        qss_path = get_styles_path(filename)
-        if qss_path.exists():
-            stylesheet = qss_path.read_text(encoding="utf-8")
-            app.setStyleSheet(stylesheet)
-            logger.debug("Applied stylesheet from %s", qss_path)
-        else:
-            logger.warning("Stylesheet not found at %s, proceeding without style", qss_path)
-    except Exception as exc:
-        logger.warning("Failed to load stylesheet: %s", exc)
 
 
 def create_application(argv: Sequence[str] | None = None) -> QApplication:
@@ -85,11 +72,11 @@ def main(argv: Sequence[str] | None = None, env_path: Path | None = None) -> int
     timer.timeout.connect(lambda: None)
     timer.start(500)
 
-    # Apply style
-    if settings.app_theme == "dark":
-        load_stylesheet(app, "theme.qss")
+    # The theme the user picked in the window, else the configured one
+    preferences = Preferences.persistent()
+    apply_theme(app, preferences.get(THEME, settings.app_theme))
 
-    window = MainWindow(settings=settings)
+    window = MainWindow(settings=settings, preferences=preferences)
     window.show()
 
     return app.exec()

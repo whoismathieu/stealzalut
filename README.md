@@ -45,7 +45,14 @@ To avoid the "monochrome filter" effect and the crushed highlights typical of gl
 
 - **Global adjustments**: luminance strength, colour strength, neutral protection, skin protection (an Oklch window with full weight on hues 37.5°–77.5°, which never blocks `L`), vivid colour protection, 3D smoothing and mix.
 - **Finishing panel**: 3 colour wheels (shadows, midtones, highlights, weighted by Bernstein polynomials on `L`), a monotone cubic tone curve on `L`, 8 Gaussian HSL hue bands, saturation and vibrance.
-- **Window**: the three images (source, reference, preview) zoom with the mouse wheel, move with a drag and come back to the whole picture with a right click; source and preview stay on the same area. The Zones section and the Ajustements / Finition tabs fold down to their header with the ▾ arrow and are resized by dragging the separators. The toolbars wrap on two rows when the window is narrow.
+- **Window**: the three images (source, reference, preview) zoom with the mouse wheel, move with a drag and come back to the whole picture with a click on the wheel; source and preview stay on the same area. A right click on an image opens a menu with the grey behind the three images, the six levels Lightroom offers (Blanc, Gris clair, Gris moyen, Gris foncé, Gris très foncé, Noir). The Zones section and the Ajustements / Finition tabs fold down to their header with the ▾ arrow and are resized by dragging the separators. The toolbars wrap on two rows when the window is narrow.
+- **Appearance**: the « Apparence ▾ » button at the bottom right chooses the theme (Graphite by default, Noir, Darkroom) and the grey behind the images; both choices are remembered. A theme is one small JSON file that gives a value to the colours and radii of the single stylesheet:
+
+  ```json
+  {"name": "Mon thème", "tokens": {"accent": "#e8a04c", "bg": "#1a1816"}}
+  ```
+
+  It only lists what it changes; everything else comes from Graphite (`src/stealzalut/gui/styles/themes/graphite.json` holds the full list of tokens). Drop the file in `src/stealzalut/gui/styles/themes/`, or in the `themes` folder of the application's configuration directory (`%LOCALAPPDATA%\StealZaLut\StealZaLut\themes` on Windows) to add one without touching the code: it appears in the menu at the next opening. `APP_THEME` in `.env` sets the theme used before any choice in the window. The zone diagram, the colour wheels and the tone curve are drawn with dark colours of their own: a light theme would need them adapted.
 
 ### Offline AI bridge and `.szl` recipes (v2)
 

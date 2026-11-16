@@ -36,7 +36,7 @@ The application follows a strictly decoupled **Model → Workers → View** patt
 
 ```text
 src/stealzalut/
-├── main.py                     # QApplication entry point, loads theme.qss
+├── main.py                     # QApplication entry point, applies the chosen theme
 ├── config.py                   # .env -> frozen Settings dataclass (default: method="look")
 ├── core/                       # PURE LOGIC (no Qt dependency)
 │   ├── colorspace.py           # sRGB <-> linear RGB <-> Oklab <-> Oklch, gamut_compress
@@ -65,7 +65,10 @@ src/stealzalut/
 │   ├── history.py              # Immutable undo/redo stack (EditState, 1.0 s merge window)
 │   ├── overlay.py              # Highlights and outlines zones on the thumbnails
 │   ├── zone_text.py            # French labels for intents, origins and dominant colours
-│   ├── styles/theme.qss        # Dark Qt theme (font sizes in px)
+│   ├── theming.py              # Themes: template + palette files -> stylesheet (apply_theme)
+│   ├── preferences.py          # Interface choices kept between sessions (theme, image backdrop)
+│   ├── styles/theme.qss        # The one stylesheet, written with @tokens (font sizes in px)
+│   ├── styles/themes/*.json    # One palette per theme: graphite (default), noir, darkroom
 │   └── widgets/                # image_drop_zone, preview_panel, correspondence_view, zone_inspector,
 │                               # adjustments_panel, finishing_panel, paste_recipe_dialog,
 │                               # image_view (zoom and pan), responsive (wrapping toolbars, folding sections)
@@ -248,4 +251,12 @@ Measured on 25 neutral photographs, 33³ LUT in Display P3. Each cell gives the 
 5. **Lifetime of `QThread` objects (`MainWindow._retire_transfer_worker`).** A `TransferWorker` replaced by a new request while it is running must never be destroyed by Python's garbage collector before it finishes (fatal Qt crash). Its signals are disconnected and a reference is kept in `_stale_transfer_workers` until the `finished` signal.
 6. **A dark colour holds little chroma.** At L ≈ 0.25 a display shows a chroma of about 0.06 on skin hues. A saturation or warmth retouch on a dark zone is computed in full by the engine and then reduced by the final gamut compression: lift the zone first (`keep_tone`, `exposure`) to give its colour room.
 7. **The window is narrower than its toolbars.** `MainWindow.setMinimumSize(900, 680)` is explicit, so Qt lets the window shrink under what its layouts ask for and squeezes the controls onto each other instead. Each toolbar is therefore a `ResponsiveRow` (`gui/widgets/responsive.py`) that puts its two groups on two rows under the width it needs, the combo boxes are allowed to shrink (`_make_flexible`; `theme.qss` gives every `QComboBox` a `min-width` that has to be lowered per object name), and the bottom panels sit in scroll areas. `tests/test_window_layout.py` checks that no control overlaps another from 900 to 1600 px and that the controls row stays on one line at 1280 px.
-8. **Images are painted by `ImageView`, not by `QLabel.setPixmap`.** Source, reference and preview zoom with the wheel (1× to 16×, around the pointer), pan with a drag and come back with a right click; source and preview are kept on the same area. A refreshed image of the same size keeps the view, so moving a slider does not lose the zoom. The drop zones display a 1280 px copy, the size the preview is rendered at (`PREVIEW_RENDER_MAX_SIZE`). On a drop zone a click opens the file dialog only when it was not a drag.
+8. **Images are painted by `ImageView`, not by `QLabel.setPixmap`.** Source, reference and preview zoom with the wheel (1× to 16×, around the pointer), pan with a drag and come back with a click on the wheel; source and preview are kept on the same area. A right click opens `ImageView.context_menu()` (whole image, backdrop). The backdrop is one of the six greys of `BACKDROPS` (levels 255, 211, 129, 62, 34, 0, read off Lightroom's swatches), set as a stylesheet of the widget itself, which wins over the theme; the view only emits `backdrop_chosen`, and `MainWindow._set_image_backdrop` gives it to the three views and stores it. A refreshed image of the same size keeps the view, so moving a slider does not lose the zoom. The drop zones display a 1280 px copy, the size the preview is rendered at (`PREVIEW_RENDER_MAX_SIZE`). On a drop zone a click opens the file dialog only when it was not a drag.
+9. **Colours live in the theme files, not in `theme.qss` nor in the code.** `theme.qss` is a template: every colour and radius is a token (`@bg`, `@surface`, `@accent`, `@radius`…) that `theming.build_stylesheet` replaces with the values of a theme. A theme is `gui/styles/themes/<key>.json` (`{"name", "tokens"}`), or the same file in the user's folder (`theming.user_theme_folder()`), which replaces a shipped theme of the same key. Rules to keep:
+   - a theme lists only the tokens it changes; the others come from `DEFAULT_THEME` (`graphite`), which therefore must define **every** token of the template: a token added to `theme.qss` is added to `graphite.json` in the same change (`tests/test_theming.py` builds every shipped theme and fails otherwise);
+   - a token value is a colour (`#rrggbb`, `#aarrggbb`), `transparent` or a length in `px`; anything else makes the file ignored with a warning, so a theme file cannot inject stylesheet rules;
+   - the arrows of the combos and the tick of the checkboxes are SVG files written at each `apply_theme` in the system's temporary folder, in the theme's colours (a Qt stylesheet only takes images from files);
+   - the theme is chosen in this order: the user's choice (`Preferences`, key `appearance/theme`), else `Settings.app_theme` (`APP_THEME`), else the default; an unknown key gives the default. A `MainWindow` built without `preferences` keeps its choices in memory only, so tests never touch the user's settings;
+   - the central widget needs a background of its own (`QMainWindow > QWidget`): with `QWidget { background: transparent }` alone, the areas outside the panels were left unpainted (black on screen);
+   - `CorrespondenceView`, the colour wheels and the tone curve paint with hard-coded dark colours: a light theme needs them reworked first.
+10. **The progress bar is a 2 px line that only exists while a task runs.** Always go through `MainWindow._set_progress`, which hides it at 0 and 100; it keeps its place when hidden (`setRetainSizeWhenHidden`), so the rows above do not move.

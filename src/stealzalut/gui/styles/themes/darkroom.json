@@ -1,0 +1,29 @@
+{
+  "name": "Darkroom",
+  "tokens": {
+    "bg": "#1a1816",
+    "surface": "#23201d",
+    "inset": "#131110",
+    "raised": "#2e2a26",
+    "raised_hover": "#3a3530",
+    "border": "#38332e",
+    "text": "#ece6de",
+    "dim": "#a89f94",
+    "mute": "#70685f",
+    "accent": "#e8a04c",
+    "accent_hover": "#f2b266",
+    "accent_press": "#c9873a",
+    "accent_text": "#1a1408",
+    "sel": "#5a4326",
+    "radius": "12px",
+    "radius_s": "8px",
+    "groove": "#3a3530",
+    "handle": "#ece6de",
+    "hint_bg": "#2b2419",
+    "hint_text": "#e6d3b3",
+    "warn_bg": "#3a2418",
+    "warn_text": "#f3bf96",
+    "warn": "#e07a4a",
+    "note": "#d9b98a"
+  }
+}

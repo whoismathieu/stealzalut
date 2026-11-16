@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
 
 from dotenv import load_dotenv
 
@@ -26,7 +25,8 @@ class Settings:
     color_transfer_method: str = "look"
 
     # GUI
-    app_theme: Literal["dark", "light"] = "dark"
+    #: Theme used until the user picks one in the window (see gui/theming.py).
+    app_theme: str = "graphite"
     preview_max_size: int = 512
 
     # Logging
@@ -53,9 +53,8 @@ def load_settings(env_path: Path | None = None) -> Settings:
         lut_default_size=int(os.getenv("LUT_DEFAULT_SIZE", "33")),
         lut_output_dir=Path(lut_output_raw) if lut_output_raw else Path.home() / "Documents",
         color_transfer_method=os.getenv("COLOR_TRANSFER_METHOD", "look"),
-        app_theme=os.getenv("APP_THEME", "dark"),  # type: ignore[arg-type]
+        app_theme=os.getenv("APP_THEME", "graphite").strip() or "graphite",
         preview_max_size=int(os.getenv("PREVIEW_MAX_SIZE", "512")),
         log_level=os.getenv("LOG_LEVEL", "INFO"),
         log_file=Path(log_file_raw) if log_file_raw else None,
     )
-

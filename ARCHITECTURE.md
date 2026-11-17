@@ -12,7 +12,7 @@ Every developer or AI assistant working on this repository must follow these rul
 2. **No AI attribution.** Never write `Co-Authored-By`, `Generated with…` or the name of an AI model in commits, comments, docstrings or any file of the repository.
 3. **Git and network safety.**
    - **Never** run `git push`, `git remote -v`, `git config --list`, and never read `.git/config`: the remote URL contains a token in clear text.
-   - The application is **100 % offline**: no network dependency, no AI API call, no key.
+   - The application is **offline**: no AI API call, no key, no telemetry, no update check. One exception, asked for by the user: `gui/incoming_image.download` fetches the address of a picture **the user dropped or pasted** (`http` / `https` only, 12 s timeout, 80 MB at most, a generic user agent, nothing about the user or the project in the request). Nothing else may open a connection.
 4. **Disk space.** The local drive is nearly full (over 95 %). Never write test images, `.npy` files or comparison plates in the repository. Use a temporary folder outside the repository (`mktemp -d`) and delete it right after use.
 5. **Languages and validation.**
    - Interface texts and user-facing error messages are in **French**. Code, identifiers, docstrings, commit messages (`feat:`, `fix:`, `docs:`) and these two documents are in **English**.
@@ -66,6 +66,7 @@ src/stealzalut/
 │   ├── overlay.py              # Highlights and outlines zones on the thumbnails
 │   ├── zone_text.py            # French labels for intents, origins and dominant colours
 │   ├── theming.py              # Themes: template + palette files -> stylesheet (apply_theme)
+│   ├── incoming_image.py       # Pictures dragged from a browser or pasted: mime data -> local file (the only network access)
 │   ├── preferences.py          # Interface choices kept between sessions (theme, image backdrop)
 │   ├── styles/theme.qss        # The one stylesheet, written with @tokens (font sizes in px)
 │   ├── styles/themes/*.json    # One palette per theme: graphite (default), noir, darkroom
@@ -273,3 +274,10 @@ Measured on 25 neutral photographs, 33³ LUT in Display P3. Each cell gives the 
    - `CorrespondenceView`, the colour wheels and the tone curve paint with hard-coded dark colours: a light theme needs them reworked first.
 10. **The progress bar is a 2 px line that only exists while a task runs.** Always go through `MainWindow._set_progress`, which hides it at 0 and 100; it keeps its place when hidden (`setRetainSizeWhenHidden`), so the rows above do not move.
 11. **The values to enter in Camera Raw are written in one place.** `main_window.camera_raw_profile_settings(space, wide_source)` names every field of the « Créer un profil » window (base profile, tone map strength, look table, colour table: space, gamut, samples, min / amount / max). It feeds the banner of a RAW source (second line, refreshed when « Espace du .cube » changes) and the message shown when an export ends. It refuses to name a space Camera Raw does not list (`_CAMERA_RAW_SPACES`; Rec.709 gamma 2.4 is not one) and advises Display P3 when the source is wide gamut and the cube is not.
+12. **A picture from a browser is not a file.** A drop or a paste carries, depending on the browser and the gesture, the decoded picture, its address, or HTML whose `<img>` holds the address or the picture as a `data:` URL; Chrome's drag gives the address only. `incoming_image.read_offer` copies what is useful out of the mime data during the event (it is not valid afterwards) and `fetch` makes a local file of it, in this order: a file already on disk, embedded bytes, the address (original bytes, hence the ICC profile), the decoded picture saved as PNG. Rules to keep:
+    - the engine and `WideImage` read **files**: never feed them a `QImage` directly, write the bytes and go through `ImageDropZone.load_from_path`;
+    - the extension comes from the first bytes (`sniff_extension`), never from the address or the server: a login page served instead of a picture is refused, not handed to a decoder;
+    - the `<img>` address wins over the plain URL of the drag, which is often the link around the picture;
+    - a drop from the web is processed after the event returns (`QTimer.singleShot(0, …)`): the download would otherwise freeze the browser the drag comes from;
+    - temporary files live in `incoming_image.incoming_folder()`; each zone deletes those it wrote in `discard_fetched()` when the window closes, and never a file of the user;
+    - failures are French sentences carried by `IncomingImageError` to `ImageDropZone.load_failed`, shown in the status bar.

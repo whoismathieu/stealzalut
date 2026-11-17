@@ -100,6 +100,8 @@ class ImageView(QLabel):
         self._press: QPointF | None = None
         self._dragged = False
         self._backdrop = DEFAULT_BACKDROP
+        #: Entries the owner of the view adds at the top of its menu: label, callback.
+        self.menu_entries: list[tuple[str, Callable[[], object]]] = []
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setWordWrap(True)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -140,6 +142,8 @@ class ImageView(QLabel):
     def context_menu(self) -> QMenu:
         """Menu of a right click: whole image, then the backdrop choices."""
         menu = QMenu(self)
+        for label, callback in self.menu_entries:
+            menu.addAction(label).triggered.connect(lambda _checked=False, run=callback: run())
         whole = menu.addAction("Image entière")
         whole.setEnabled(self._pixmap is not None and self._zoom > 1.0)
         whole.triggered.connect(self._show_whole_image)

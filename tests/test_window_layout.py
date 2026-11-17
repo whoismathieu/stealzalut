@@ -191,6 +191,13 @@ class TestZoom:
         view = self._view(qapp)
         whole = view.context_menu().actions()[0]
         assert whole.text() == "Image entière" and not whole.isEnabled()
+        ran: list[int] = []
+        view.menu_entries.append(("Coller", lambda: ran.append(1)))
+        first = view.context_menu().actions()[0]
+        assert first.text() == "Coller"
+        first.trigger()
+        assert ran == [1]
+        view.menu_entries.clear()
         _wheel(view, 6, QPointF(20, 20))
         moves: list[float] = []
         view.view_changed.connect(lambda zoom, _cx, _cy: moves.append(zoom))

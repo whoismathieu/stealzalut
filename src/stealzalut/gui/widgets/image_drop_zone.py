@@ -1,9 +1,11 @@
 """Drag-and-drop image widget.
 
 Displays a placeholder label when empty, or the image fitted to the zone
-when one has been loaded (via drag-and-drop or file dialog); the image can
-be zoomed and panned (see
-:class:`~stealzalut.gui.widgets.image_view.ImageView`).  The path of
+when one has been loaded (via drag-and-drop, paste or file dialog); the image
+can be zoomed and panned (see
+:class:`~stealzalut.gui.widgets.image_view.ImageView`).  A picture dragged
+from a web page or pasted from the clipboard is accepted like a file (see
+:mod:`stealzalut.gui.incoming_image`).  The path of
 the loaded file is shown at the bottom-left of the zone, selectable and
 copyable (Ctrl+C or the copy button).
 """
@@ -16,13 +18,14 @@ from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QMimeData, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QDragEnterEvent,
     QDropEvent,
     QGuiApplication,
 )
 from PySide6.QtWidgets import (
+    QApplication,
     QFileDialog,
     QHBoxLayout,
     QLineEdit,
@@ -31,6 +34,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from stealzalut.gui.incoming_image import IncomingImageError, Offer, fetch, read_offer
 from stealzalut.gui.overlay import highlight_zone
 from stealzalut.gui.widgets.image_view import ImageView
 from stealzalut.utils.image_io import (
@@ -71,6 +75,8 @@ class ImageDropZone(QWidget):
         image_loaded (object): Emitted with the loaded RGB uint8 ndarray
             when a valid image is successfully loaded.
         image_cleared: Emitted when the image is removed.
+        load_failed (str): A drop or a paste gave no image; the reason, in
+            French, for the status bar.
 
     The widget stores the **full-resolution RGB image** internally and
     only displays a down-scaled copy.  A click that is not a drag opens the
@@ -79,6 +85,7 @@ class ImageDropZone(QWidget):
 
     image_loaded = Signal(object)
     image_cleared = Signal()
+    load_failed = Signal(str)
 
     def __init__(
         self,
@@ -93,6 +100,8 @@ class ImageDropZone(QWidget):
         self._image_rgb: NDArray[np.uint8] | None = None
         self._image_path: Path | None = None
         self._thumb_rgb: NDArray[np.uint8] | None = None
+        # Temporary files written for pictures that came from the web or the clipboard
+        self._fetched: list[Path] = []
 
         # Accept drops
         self.setAcceptDrops(True)
@@ -105,6 +114,7 @@ class ImageDropZone(QWidget):
         self._label.setMinimumSize(200, 160)
         self._label.setObjectName("dropZoneLabel")
         self._label.clicked.connect(self._open_file_dialog)
+        self._label.menu_entries.append(("Coller une image (Ctrl+V)", self.paste_from_clipboard))
         layout.addWidget(self._label)
 
         # Path row (bottom-left): read-only field + copy button, hidden when empty
@@ -208,31 +218,72 @@ class ImageDropZone(QWidget):
     # ── Drag-and-drop ────────────────────────────────────────────────────
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
-        if event.mimeData().hasUrls():
-            # Accept if at least one URL looks like a supported image
-            for url in event.mimeData().urls():
-                if url.isLocalFile():
-                    suffix = Path(url.toLocalFile()).suffix.lower()
-                    if suffix in SUPPORTED_EXTENSIONS:
-                        event.acceptProposedAction()
-                        return
-        event.ignore()
+        # A supported file, or anything a browser gives for a picture
+        if read_offer(event.mimeData()):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
 
     def dropEvent(self, event: QDropEvent) -> None:
-        for url in event.mimeData().urls():
-            if url.isLocalFile():
-                path = Path(url.toLocalFile())
-                if path.suffix.lower() in SUPPORTED_EXTENSIONS and self.load_from_path(path):
-                    event.acceptProposedAction()
-                    return
-        event.ignore()
+        offer = read_offer(event.mimeData())
+        if not offer:
+            event.ignore()
+            return
+        event.acceptProposedAction()
+        if offer.local_file is not None:
+            self.load_offer(offer)
+        else:
+            # Fetching may take a moment: let the browser finish its drag first
+            QTimer.singleShot(0, lambda: self.load_offer(offer))
+
+    # ── Paste, and pictures that are not files ───────────────────────────
+
+    def paste_from_clipboard(self) -> bool:
+        """Load the picture held by the clipboard (image, file or web address)."""
+        return self.load_mime(QGuiApplication.clipboard().mimeData())
+
+    def discard_fetched(self) -> None:
+        """Delete the temporary files this zone wrote (when the window closes)."""
+        for path in self._fetched:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as exc:
+                logger.debug("Could not delete %s: %s", path, exc)
+        self._fetched.clear()
+
+    def load_mime(self, mime: QMimeData) -> bool:
+        """Load the picture *mime* carries; ``False`` (and :attr:`load_failed`) if none."""
+        return self.load_offer(read_offer(mime))
+
+    def load_offer(self, offer: Offer) -> bool:
+        """Load the picture of *offer*, fetching it from the web when it is an address."""
+        if not offer:
+            self.load_failed.emit("Aucune image dans ce qui a été déposé ou collé.")
+            return False
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            path = fetch(offer)
+        except IncomingImageError as exc:
+            self.load_failed.emit(str(exc))
+            return False
+        except OSError as exc:
+            self.load_failed.emit(f"Image non enregistrée temporairement : {exc}")
+            return False
+        finally:
+            QApplication.restoreOverrideCursor()
+        if path != offer.local_file and path not in self._fetched:
+            self._fetched.append(path)
+        if self.load_from_path(path):
+            return True
+        self.load_failed.emit("Cette image n'a pas pu être lue.")
+        return False
 
     # ── Click to browse ──────────────────────────────────────────────────
 
     def _open_file_dialog(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "Select Image",
+            "Choisir une image",
             "",
             _FILTER,
         )

@@ -20,6 +20,7 @@ from numpy.typing import NDArray
 from PySide6.QtCore import QPoint, Qt, QTimer, QUrl
 from PySide6.QtGui import (
     QColor,
+    QCursor,
     QDesktopServices,
     QGuiApplication,
     QIcon,
@@ -654,6 +655,21 @@ class MainWindow(QMainWindow):
             "Dépose une image source et une image de référence pour commencer."
         )
 
+    def paste_image(self) -> None:
+        """Ctrl+V: the clipboard's picture goes to the zone under the pointer.
+
+        Away from both zones it goes to the first empty one, source first,
+        and replaces the source when both are filled.
+        """
+        zones = (self._source_zone, self._reference_zone)
+        pointer = QCursor.pos()
+        target = next(
+            (zone for zone in zones if zone.rect().contains(zone.mapFromGlobal(pointer))), None
+        )
+        if target is None:
+            target = next((zone for zone in zones if not zone.has_image), self._source_zone)
+        target.paste_from_clipboard()
+
     def _set_progress(self, percent: int) -> None:
         """Show the progress of a running task; the bar disappears at 0 and at 100."""
         self._progress_bar.setValue(percent)
@@ -896,6 +912,9 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence.StandardKey.Undo, self, self.undo)
         QShortcut(QKeySequence.StandardKey.Redo, self, self.redo)
         QShortcut(QKeySequence("Ctrl+Y"), self, self.redo)
+        QShortcut(QKeySequence.StandardKey.Paste, self, self.paste_image)
+        for zone in (self._source_zone, self._reference_zone):
+            zone.load_failed.connect(self._status_bar.showMessage)
 
     # ── Slots ────────────────────────────────────────────────────────────
 
@@ -2176,6 +2195,8 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: Any) -> None:
         """Ensure background threads are safely terminated before closing."""
         self.stop_workers()
+        for zone in (self._source_zone, self._reference_zone):
+            zone.discard_fetched()
         super().closeEvent(event)
 
 

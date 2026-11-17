@@ -1,6 +1,6 @@
 # StealZaLut — Technical Architecture & Reference Context
 
-> **Single source of truth.** This document and `README.md` are the **only context files** of the project. They replace and consolidate all earlier notes (`CONTEXT.md`, `docs/approach-v3/*`, `docs/audit/*`), which remain available in the Git history.
+> **Single source of truth.** This document and `README.md` are the **only context files** of the project, with `AGENTS.md`, a one-page entry point that says which section of this document to open for a given task (start there). They replace and consolidate all earlier notes (`CONTEXT.md`, `docs/approach-v3/*`, `docs/audit/*`), which remain available in the Git history.
 
 ---
 
@@ -8,10 +8,10 @@
 
 Every developer or AI assistant working on this repository must follow these rules:
 
-1. **One set of documents (no bloat).** Never create secondary `.md` files (status logs, sub-plans, session notes) to iterate. Every architectural update goes into `ARCHITECTURE.md` and `README.md` only.
+1. **One set of documents (no bloat).** Never create secondary `.md` files (status logs, sub-plans, session notes) to iterate. Every architectural update goes into `ARCHITECTURE.md` and `README.md` only; `AGENTS.md` holds no architecture, only the rules, a map of these documents and the current state of the project.
 2. **No AI attribution.** Never write `Co-Authored-By`, `Generated with…` or the name of an AI model in commits, comments, docstrings or any file of the repository.
 3. **Git and network safety.**
-   - **Never** run `git push`, `git remote -v`, `git config --list`, and never read `.git/config`: the remote URL contains a token in clear text.
+   - **Never** run `git remote -v` or `git config --list`, and never read `.git/config`: the remote URL contains a token in clear text. `git push` only when the user explicitly asks for it, each time.
    - The application is **offline**: no AI API call, no key, no telemetry, no update check. One exception, asked for by the user: `gui/incoming_image.download` fetches the address of a picture **the user dropped or pasted** (`http` / `https` only, 12 s timeout, 80 MB at most, a generic user agent, nothing about the user or the project in the request). Nothing else may open a connection.
 4. **Disk space.** The local drive is nearly full (over 95 %). Never write test images, `.npy` files or comparison plates in the repository. Use a temporary folder outside the repository (`mktemp -d`) and delete it right after use.
 5. **Languages and validation.**

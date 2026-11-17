@@ -63,24 +63,33 @@ To avoid the "monochrome filter" effect and the crushed highlights typical of gl
 
 ## 3. Lightroom Classic / Camera Raw and RAW Files
 
-A RAW/DNG file dropped as the source is **developed by StealZaLut on a neutral base**, the same fixed operations for every picture:
+A RAW/DNG file dropped as the source is **developed by StealZaLut the way Lightroom develops it on Adobe Standard with every slider at zero**. For a DNG whose camera Adobe knows, the application reads Adobe's own « Adobe Standard » profile of that camera, the `.dcp` file Lightroom or Camera Raw installed on the machine (`C:\ProgramData\Adobe\CameraRaw\CameraProfiles\Adobe Standard` on Windows, `/Library/Application Support/Adobe/CameraRaw/CameraProfiles/Adobe Standard` on macOS), and applies the steps of Adobe's DNG SDK in its order:
 
-1. demosaicing by LibRaw in 16-bit linear ProPhoto RGB, white balance as shot, no automatic brightening;
-2. the file's `BaselineExposure` (DNG only), as a plain gain clipped at white;
-3. a fixed black point (0.43 % of the range);
-4. Adobe's default base tone curve (the one a profile without a curve of its own, Adobe Standard included, is rendered with), applied at constant hue;
-5. no saturation, vibrance or contrast step, and nothing measured on the picture: a night scene stays a night scene.
+1. demosaicing by LibRaw into the camera's own channels, 16-bit linear, no white balance, no automatic brightening, and the white level of the file left where it is;
+2. the profile's matrices, mixed for the white balance of the shot (the temperature found is the one Lightroom displays for « As Shot »);
+3. the profile's hue and saturation table;
+4. the file's `BaselineExposure`, as a plain gain clipped at white, then a fixed black point (0.43 % of the range) on each channel;
+5. the profile's « look » table;
+6. Adobe's default base tone curve (or the profile's own, when it has one), applied at constant hue.
+
+Nothing is measured on the picture: a night scene stays a night scene. The profile is read where Adobe put it and is never copied. **Without it** (another RAW format, a camera Adobe has no profile for, a machine without Lightroom or Camera Raw) the file is developed with its own matrices and the same exposure, black point and curve, which is close but less exact; the banner of the window says which of the two was used.
 
 The result enters the engine unclipped and is handed to the LUT in Display P3. The JPEG embedded by the camera (with the manufacturer's look: local tone mapping, lifted shadows, extra saturation) is only used when the file cannot be demosaiced.
 
-**How close this is to Lightroom.** Measured on one file, an iPhone 15 Pro Max ProRAW night scene, against its export from Lightroom Classic 15.6 on Adobe Standard with every slider at zero (16-bit TIFF, Display P3), on 400 000 pixels:
+**How close this is to Lightroom.** Measured on two iPhone 15 Pro Max ProRAW night scenes (`BaselineExposure` +1.6 and +2.4 EV), 400 000 pixels each, against Lightroom Classic 15.6 on Adobe Standard with every slider at zero (16-bit TIFF, Display P3). The first is compared with its plain export; the second with its export through a profile made from a `.cube`, the application's development going through the same `.cube`:
 
-| Source read by StealZaLut | Mean lightness gap | Typical colour gap (median ΔE Oklab) | RMS ΔE | Saturation, shadows and mid-tones |
-| :--- | :---: | :---: | :---: | :---: |
-| Neutral development | 0.000 | 0.006 | 0.021 | 0.93 to 1.08 × Lightroom |
-| JPEG embedded by the phone | +0.007 | 0.039 | 0.077 | 1.24 to 1.39 × Lightroom |
+| Source read by StealZaLut | File | Mean lightness gap | Typical colour gap (median ΔE Oklab) | RMS ΔE | Saturation, by lightness band |
+| :--- | :--- | :---: | :---: | :---: | :---: |
+| **Adobe's profile (current)** | first | −0.001 | 0.005 | 0.016 | 1.01 to 1.04 × Lightroom |
+| | second, through the `.cube` | +0.004 | 0.006 | 0.016 | 0.86 to 1.07 × |
+| The file's own matrices (fallback) | first | +0.001 | 0.005 | 0.022 | 0.93 to 1.60 × |
+| | second, through the `.cube` | +0.001 | 0.007 | 0.017 | 0.87 to 1.28 × |
+| Same, before the white level was fixed | second, through the `.cube` | **+0.055** | 0.052 | 0.068 | 0.74 to 1.65 × |
+| JPEG embedded by the phone | first | +0.007 | 0.039 | 0.077 | 1.24 to 1.39 × |
 
-What remains is in the highlights (14 % of that picture): Lightroom holds and desaturates them area by area, which no fixed development reproduces, and the neutral development keeps them 1.4 × more saturated. About 0.014 of the RMS gap is Lightroom's own local processing (sharpening, noise reduction, highlights). The gain table map of a ProRAW file is ignored, as Lightroom does outside Apple's own profile: applying it puts the result ten times further away. Other cameras have not been measured: Lightroom's Adobe Standard uses its own camera matrices and, on some cameras, an exposure offset stored in its profile. A banner in the window says which rendering the source has.
+The fifth row is a defect that was corrected: LibRaw moved the white level of each file to its brightest pixel, which brightened the second photo by 0.21 EV and the first by nothing. A steep `.cube` turns such a gap into a visible one.
+
+What remains (about 0.014 of the RMS gap) is what Lightroom does area by area and what no development of a pixel alone, hence no `.cube`, reproduces: sharpening, noise reduction, and the way it holds the brightest highlights. The gain table map of a ProRAW file is ignored, as Lightroom does outside Apple's own profile. Other cameras have not been measured.
 
 In Adobe Camera Raw and Lightroom:
 

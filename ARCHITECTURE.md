@@ -74,6 +74,7 @@ src/stealzalut/
 │                               # image_view (zoom and pan), responsive (wrapping toolbars, folding sections)
 ├── utils/
 │   ├── image_io.py             # WideImage, native ICC decoding, neutral RAW/DNG development (rawpy), HEIC
+│   ├── camera_profile.py       # Adobe .dcp profiles: reading, white point, matrices, HSV tables (DNG SDK colour steps)
 │   └── paths.py                # Path resolution compatible with PyInstaller (sys._MEIPASS)
 └── devtools/
     ├── ground_truth.py         # Known-truth bench in Display P3 (not imported by the application)
@@ -92,29 +93,40 @@ src/stealzalut/
    - When the file carries a wide-gamut ICC profile recognised by substring (`Display P3`, `Adobe RGB` / `ClayRGB` / `opRGB`, `ProPhoto` / `ROMM`), `WideImage` carries two more things:
      - `analysis_lab`: an `(h, w, 3)` `float64` array of the **unclipped Oklab** colours of the analysis copy (256 px), computed from the file's own values with the exact matrices of `core/rgb_spaces.py`.
      - `native` and `native_space`: the full-size pixels as encoded in the file, and their `RGBSpace`.
-   - **RAW / DNG files (`develop_raw_pixels`, `rendering = "neutral-raw"`).** They are developed here, with fixed operations that never look at the picture's histogram (the earlier loader read the camera's JPEG, then, failing that, forced the median of every picture to 40 % and boosted saturation in HSV):
-     1. `rawpy.postprocess(use_camera_wb=True, no_auto_bright=True, gamma=(1, 1), output_bps=16, output_color=ProPhoto)`: 16-bit linear ProPhoto;
-     2. `exposure_curve(channel, BaselineExposure)`: a gain `2 ** ev` clipped at white, as `dng_function_exposure_ramp` does; a negative value is the darkening of `dng_function_exposure_tone`. The tag is read in the main directory and its sub-directories (`read_dng_tags`), and ignored outside ±4 EV;
-     3. `RAW_BLACK_POINT = 0.0043`, taken off the largest channel, the two others scaled alike;
-     4. `base_curve`: the default ACR3 curve of the DNG SDK (`dng_tone_curve_acr3_default`, 129 samples, linear in and out), with the DNG rule for curves: largest and smallest channel through the curve, the middle one at the same relative position. No saturation step.
+   - **RAW / DNG files (`develop_raw_pixels`).** They are developed here, with fixed operations that never look at the picture's histogram. Two paths:
+     - **With Adobe's profile of the camera (`rendering = "adobe-profile"`).** For a DNG that stores `UniqueCameraModel` and `AsShotNeutral`, `camera_profile.find_adobe_standard` looks for the « Adobe Standard » `.dcp` Adobe installed on the machine (`adobe_profile_folders()`; the file whose name ends with the model and whose own `UniqueCameraModel` matches). `plan_development` resolves it for the shot, `develop_with_profile` applies it, in the order of the DNG SDK:
+       1. `rawpy.postprocess(output_color=raw, user_wb=[1, 1, 1, 1], gamma=(1, 1), no_auto_bright=True, adjust_maximum_thr=0, output_bps=16)`: the camera's own channels, linear;
+       2. camera → ProPhoto: `XYZ_D50_TO_PROPHOTO @ ForwardMatrix @ diag(1 / reference neutral) @ inv(AnalogBalance)`. The two matrices of the profile are mixed linearly in 1 / T for the temperature of the white point, itself found by iterating `xy → T → ColorMatrix → xy` from the file's neutral (DNG specification, chapter 6). The temperature found is the one Lightroom shows for « As Shot » (5433 K against 5450, 6361 against 6350);
+       3. `ProfileHueSatMap` (`apply_hsv_table`, HSV of linear ProPhoto, hue wrapping, trilinear), the two tables mixed like the matrices;
+       4. exposure `2 ** (BaselineExposure + BaselineExposureOffset)` clipped at white, then `RAW_BLACK_POINT = 0.0043` taken off **each channel**;
+       5. `ProfileLookTable`;
+       6. the tone curve (the profile's `ProfileToneCurve`, else `base_curve`) with the DNG rule: largest and smallest channel through the curve, the middle one at the same relative position.
+     - **Without it (`rendering = "neutral-raw"`).** `rawpy.postprocess(use_camera_wb=True, output_color=ProPhoto, …)`, i.e. the file's own matrices as LibRaw reads them, then `exposure_curve`, the black point taken off the largest channel (the two others scaled alike) and `base_curve`. No table.
+     - **`adjust_maximum_thr=0` is not optional.** By default LibRaw moves the white level to the brightest value of the picture when that value is above 75 % of the nominal one: every photo got a gain of its own (× 1.16, that is 0.21 EV, on a file peaking at 86 %; × 1.00 on the file the development had been calibrated on, which is why it went unnoticed).
+     - **Threads.** Bands of 256 rows are developed on up to 8 threads (numpy releases the interpreter lock). Matrix products go through `_transform`, not `@`: called from several threads at once, the linear-algebra library's own pool stalled for minutes. A 12 MP file takes about 6.5 s with the profile, 3 s without.
+     - A profile without `ForwardMatrix`, a calibration light of unknown temperature, or a DNG whose white balance is not stored as `AsShotNeutral`, falls back on the second path. `CameraCalibration` matrices are not applied.
      - The array is the sRGB reduction, `native` is the same development encoded in `DISPLAY_P3`, and `analysis_lab` is the average of the **developed** pixels, reduced band by band in a cube-root encoding. Developing a picture already reduced to 256 px averages the light before the curve: on a night scene a lamp lifts its dark neighbours and the analysis reads 0.013 of lightness more than the pixels the LUT is applied to (0.0004 with the present order).
      - A `ProfileGainTableMap` (Apple ProRAW) is deliberately **not** applied: it belongs to the file's own profile, not to Adobe Standard.
      - Fallbacks, in order: the JPEG embedded by the camera when it is at least 1024 px (`rendering = "camera-preview"`, also what `auto_develop_raw=False` asks for), then Pillow. `MainWindow._update_source_hint` words its banner on `rendering`.
-     - **Measured against Lightroom, on one file.** An iPhone 15 Pro Max ProRAW night scene (`BaselineExposure` +1.615 EV, gain table map 48 × 64 × 257 with gains from 0.36 to 5.1) and its export from Lightroom Classic 15.6 (Adobe Standard, process 15.4, every slider at zero, 16-bit TIFF in Display P3), compared pixel by pixel on 400 000 pixels in Oklab:
+     - **Measured against Lightroom, on two files of one camera.** iPhone 15 Pro Max ProRAW night scenes (`BaselineExposure` +1.615 and +2.428 EV), Lightroom Classic 15.6, Adobe Standard, process 15.4, every slider at zero, 16-bit TIFF in Display P3, 400 000 pixels compared in Oklab. File A against its plain export; file B against its export through a « look » profile made from a 64-point `.cube` in Display P3, the development going through the same `.cube` (trilinear):
 
-       | Development | RMS ΔE | Mean ΔL |
-       | :--- | :---: | :---: |
-       | DNG SDK as published: exposure, clip, ACR3 curve | 0.0305 | +0.018 |
-       | Same with a shoulder instead of the clip (first version) | 0.0330 | +0.017 |
-       | Same with the gain table map applied before the exposure | 0.218 | +0.198 |
-       | **SDK + black point 0.0043 (current)** | **0.0208** | −0.0004 |
-       | The JPEG embedded by the phone | 0.0768 | +0.007 |
+       | Development | File | RMS ΔE | Median ΔE | Mean ΔL | Chroma ratio by band (L 0–0.25 … 0.8–1) |
+       | :--- | :--- | :---: | :---: | :---: | :--- |
+       | **Adobe's profile (current)** | A | **0.0161** | 0.0052 | −0.0006 | 1.01 1.03 1.02 1.02 1.04 |
+       | | B → cube | **0.0157** | 0.0056 | +0.0037 | 0.95 1.07 1.05 1.02 0.86 |
+       | File's own matrices, white level fixed | A | 0.0221 | 0.0054 | +0.0006 | 0.93 1.05 1.08 1.11 1.60 |
+       | | B → cube | 0.0166 | 0.0065 | +0.0013 | 1.10 1.28 1.07 1.03 0.87 |
+       | Same, white level moved by LibRaw (before) | B → cube | 0.0677 | 0.0515 | +0.0547 | 1.34 1.65 1.20 1.04 0.74 |
+       | Profile matrices only, no table | A | 0.0209 | 0.0089 | +0.0006 | 0.58 0.66 0.68 0.70 0.84 |
+       | Profile without its look table | B → cube | 0.0182 | 0.0105 | −0.0003 | 1.16 1.34 1.09 1.02 0.85 |
+       | Gain table map applied (earlier trial) | A | 0.218 | | +0.198 | |
+       | The JPEG embedded by the phone | A | 0.0768 | 0.039 | +0.007 | |
 
-       - The black point is what the SDK alone misses: without it every tone under L = 0.4 is 0.02 to 0.03 too bright. Fitted on either half of the picture it comes out at 0.0043 both times; an exposure offset fitted with it comes out at +0.007 EV, that is none.
-       - The gain table map is **not** applied by Lightroom outside Apple's own profile. Applied with the profile's own tone curve, it reproduces the embedded JPEG to 0.046 RMS: that is what the phone's look is made of.
-       - Under L = 0.6 the gap is 0.015, of which 0.014 cannot be removed by any function of the pixel alone (the reference varies that much between pixels of the same raw colour: sharpening, noise reduction). Hues agree to a few degrees (+6° on blues), saturation to 0.93–1.08.
-       - Above L = 0.8 the gap is 0.038 and the development is 1.4 × more saturated: Lightroom compresses and desaturates the highlights area by area. A shoulder on each channel gains 0.0015 on the whole picture but its parameters do not hold from one half of the picture to the other; it was left out.
-       - **One camera, one scene.** A RAW file that is not a DNG has no BaselineExposure here, and Lightroom's profile may carry an offset of its own.
+       - Adobe's matrices are not the file's: without the profile's tables the picture is a third less saturated than Lightroom's. Matrices and tables only make sense together.
+       - The black point holds on both files as a share of the **exposed** range: fitted on B through the cube it comes out at 0.0043 again (0.0008 before an exposure of × 5.38), with no exposure offset.
+       - The gain table map is **not** applied by Lightroom outside Apple's own profile.
+       - About 0.014 of what remains cannot be removed by any function of the pixel alone (the reference varies that much between pixels of the same raw colour: sharpening, noise reduction, local handling of the highlights).
+       - **One camera.** Other makers, and RAW files that are not DNG, have not been measured.
    - **`WideImage` invariant.** Any slicing, copy or resize (`create_thumbnail`, `np.asarray`, indexing) goes through `__array_finalize__` and resets `analysis_lab` and `native` to `None`. The engine's single entry point for reading the analysis is `core/palette.py:analysis_oklab(image)`.
 2. **Engine space (`core/colorspace.py`)**
    - The whole engine works in **unbounded Oklab**. The conversion to LMS uses a signed cube root (`np.cbrt(lms)`), so coordinates outside the sRGB gamut are kept without clipping.

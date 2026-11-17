@@ -1022,6 +1022,15 @@ class TestSourceFidelity:
             window._space_combo.setCurrentIndex(window._space_combo.findData("rec709-g24"))
             assert "ne propose pas" in host.text() and "Gamut" not in host.text()
             window._space_combo.setCurrentIndex(window._space_combo.findData("srgb"))
+
+            # Developed with Adobe's own profile of the camera: the banner says so
+            from stealzalut.gui.main_window import _RAW_ADOBE_HINT
+
+            window._source_zone.image_rgb.rendering = "adobe-profile"
+            window._update_source_hint()
+            assert label.text() == _RAW_ADOBE_HINT
+            assert "profil Adobe Standard de ton appareil" in label.text()
+            assert "deux ProRAW" in label.toolTip()
             assert window._source_zone.image_rgb.native_space.key == "display-p3"
 
             window._source_zone.clear_image()

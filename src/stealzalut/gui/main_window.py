@@ -120,7 +120,12 @@ from stealzalut.gui.widgets.preview_panel import PreviewPanel
 from stealzalut.gui.widgets.responsive import ResponsiveRow, SplitterSection, collapse_button
 from stealzalut.gui.widgets.zone_inspector import ZoneInspector
 from stealzalut.gui.zone_text import dominant_colour_name, pct
-from stealzalut.utils.image_io import RAW_EXTENSIONS, RENDERING_FILE, RENDERING_NEUTRAL_RAW
+from stealzalut.utils.image_io import (
+    RAW_EXTENSIONS,
+    RENDERING_ADOBE_PROFILE,
+    RENDERING_FILE,
+    RENDERING_NEUTRAL_RAW,
+)
 from stealzalut.workers.export_worker import ExportWorker
 from stealzalut.workers.transfer_worker import TransferWorker
 
@@ -144,9 +149,10 @@ _ANALYSING_MESSAGE = "Analyse des zones de couleur…"
 
 #: Shown when the RAW source was developed here (see ``image_io.develop_raw_linear``).
 _RAW_DEVELOPED_HINT = (
-    "Source RAW développée sur une base neutre, proche de Lightroom sur Adobe Standard, "
-    "curseurs à zéro (hautes lumières plus saturées ici). Pour un .cube exact, utilise "
-    "comme source un export de ton logiciel. Survole ce message pour le détail."
+    "Source RAW développée sur une base neutre, faute de profil Adobe Standard installé "
+    "pour cet appareil : proche de Lightroom sur Adobe Standard, curseurs à zéro (hautes "
+    "lumières plus saturées ici). Pour un .cube exact, utilise comme source un export de "
+    "ton logiciel. Survole ce message pour le détail."
 )
 _RAW_DEVELOPED_DETAIL = (
     "Développement : exposition de base du fichier, point noir et courbe de base d'Adobe, "
@@ -157,6 +163,23 @@ _RAW_DEVELOPED_DETAIL = (
     "Mesuré sur un seul fichier (ProRAW d'iPhone) : pour un autre appareil, ou pour un "
     ".cube exact, exporte la photo depuis ton logiciel sur ce profil neutre (JPEG ou TIFF, "
     "Display P3) et utilise cet export comme source."
+)
+#: Shown when the RAW source was developed with Adobe's own profile of the camera.
+_RAW_ADOBE_HINT = (
+    "Source RAW développée avec le profil Adobe Standard de ton appareil, celui de "
+    "Lightroom : mêmes couleurs et même luminosité que Lightroom sur Adobe Standard, "
+    "curseurs à zéro, à la netteté et au bruit près. Survole pour le détail."
+)
+_RAW_ADOBE_DETAIL = (
+    "Développement : profil Adobe Standard lu dans l'installation d'Adobe sur cette machine "
+    "(matrices et tables de couleur), balance des blancs de la prise de vue, exposition de "
+    "base du fichier, point noir et courbe de base d'Adobe.\n"
+    "Comparé à Lightroom Classic sur Adobe Standard, curseurs à zéro, sur deux ProRAW "
+    "d'iPhone 15 Pro Max : même luminosité, saturation égale à 4 % près, écart typique "
+    "de 0,005 (ΔE Oklab).\n"
+    "Ce qui reste vient de la netteté, de la réduction du bruit et du traitement local des "
+    "hautes lumières de Lightroom, qu'un .cube ne peut pas reproduire. Autres appareils : "
+    "non mesurés."
 )
 #: Shown when the RAW source could only be read through the camera's embedded JPEG.
 _RAW_PREVIEW_HINT = (
@@ -1056,11 +1079,12 @@ class MainWindow(QMainWindow):
         )
         rendering = getattr(self._source_zone.image_rgb, "rendering", RENDERING_FILE)
         if is_raw:
-            developed = rendering == RENDERING_NEUTRAL_RAW
-            self._source_hint_label.setText(_RAW_DEVELOPED_HINT if developed else _RAW_PREVIEW_HINT)
-            self._source_hint_label.setToolTip(
-                _RAW_DEVELOPED_DETAIL if developed else _RAW_PREVIEW_DETAIL
-            )
+            hint, detail = {
+                RENDERING_ADOBE_PROFILE: (_RAW_ADOBE_HINT, _RAW_ADOBE_DETAIL),
+                RENDERING_NEUTRAL_RAW: (_RAW_DEVELOPED_HINT, _RAW_DEVELOPED_DETAIL),
+            }.get(rendering, (_RAW_PREVIEW_HINT, _RAW_PREVIEW_DETAIL))
+            self._source_hint_label.setText(hint)
+            self._source_hint_label.setToolTip(detail)
             wide = getattr(self._source_zone.image_rgb, "native", None) is not None
             self._host_hint_label.setText(camera_raw_profile_settings(self._cube_space(), wide))
         self._source_hint.setVisible(is_raw)

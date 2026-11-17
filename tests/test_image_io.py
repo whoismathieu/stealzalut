@@ -176,6 +176,9 @@ class TestCameraRawLoading:
             "output_bps": 16,
             "gamma": (1.0, 1.0),
             "no_auto_bright": True,
+            # The white level stays the file's: LibRaw would otherwise move it to
+            # the brightest pixel, a gain that changes from one photo to the next
+            "adjust_maximum_thr": 0.0,
         }
 
     def test_load_raw_fallback_auto_wb(self, tmp_path: Path) -> None:

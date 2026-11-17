@@ -7,12 +7,22 @@ depend on Qt, keeping them usable in headless / test environments.
 from __future__ import annotations
 
 import logging
+import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, cast
 
 import cv2
 import numpy as np
 from numpy.typing import NDArray
+
+from stealzalut.utils.camera_profile import (
+    Development,
+    apply_hsv_table,
+    find_adobe_standard,
+    plan_development,
+    read_dng_colour,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +77,8 @@ WIDE_ANALYSIS_SIZE = 256
 #: Values of :attr:`WideImage.rendering`.
 RENDERING_FILE = "file"
 RENDERING_NEUTRAL_RAW = "neutral-raw"
+#: Developed here with Adobe's own « Adobe Standard » profile of the camera.
+RENDERING_ADOBE_PROFILE = "adobe-profile"
 RENDERING_CAMERA_PREVIEW = "camera-preview"
 
 
@@ -387,6 +399,8 @@ _CURVE_X: NDArray[np.float64] = np.linspace(0.0, 1.0, ACR3_BASE_CURVE.size, dtyp
 
 #: Rows developed at a time (bounds the memory of a 50-megapixel file).
 _DEVELOP_ROWS = 256
+#: Bands developed at the same time.
+_DEVELOP_THREADS = min(8, os.cpu_count() or 1)
 
 _TIFF_TYPES = {1: "B", 3: "H", 4: "I", 5: "II", 7: "B", 8: "h", 9: "i", 10: "ii", 11: "f", 12: "d"}
 
@@ -528,29 +542,118 @@ def develop_raw_linear(
     return cast("NDArray[np.float64]", bottom + position * (top - bottom))
 
 
-def _demosaic_linear(raw: Any) -> NDArray[np.uint16]:
-    """Demosaic *raw* (an open rawpy file) to 16-bit linear ProPhoto RGB.
+def _demosaic_linear(raw: Any, camera_space: bool = False) -> NDArray[np.uint16]:
+    """Demosaic *raw* (an open rawpy file) to 16-bit linear RGB.
 
-    White balance as shot; no automatic brightening, no tone curve.
+    No automatic brightening, no tone curve, and the white level of the file
+    as it is: LibRaw otherwise moves it to the brightest value met in the
+    picture (``adjust_maximum_thr``), which brightens each photo by a factor
+    of its own (1.16, or 0.21 EV, on a file whose brightest pixel is at 86 %).
+
+    Args:
+        raw: Open rawpy file.
+        camera_space: ``True`` for the camera's own channels, without white
+            balance (what a camera profile takes); ``False`` for ProPhoto RGB
+            with the white balance of the shot.
     """
     import rawpy
 
     settings: dict[str, Any] = {
-        "output_color": rawpy.ColorSpace.ProPhoto,  # type: ignore[attr-defined]
         "output_bps": 16,
         "gamma": (1.0, 1.0),
         "no_auto_bright": True,
+        "adjust_maximum_thr": 0.0,
     }
-    try:
-        linear = raw.postprocess(use_camera_wb=True, **settings)
-    except Exception as exc:
-        logger.debug("No camera white balance (%s): using LibRaw's automatic one", exc)
-        linear = raw.postprocess(use_auto_wb=True, **settings)
+    if camera_space:
+        linear = raw.postprocess(
+            output_color=rawpy.ColorSpace.raw,  # type: ignore[attr-defined]
+            use_camera_wb=False,
+            user_wb=[1.0, 1.0, 1.0, 1.0],
+            **settings,
+        )
+    else:
+        settings["output_color"] = rawpy.ColorSpace.ProPhoto  # type: ignore[attr-defined]
+        try:
+            linear = raw.postprocess(use_camera_wb=True, **settings)
+        except Exception as exc:
+            logger.debug("No camera white balance (%s): using LibRaw's automatic one", exc)
+            linear = raw.postprocess(use_auto_wb=True, **settings)
     if not isinstance(linear, np.ndarray) or linear.ndim != 3 or linear.shape[2] != 3:
         raise ValueError("LibRaw did not return an RGB picture")
     if linear.dtype != np.uint16:
         raise ValueError(f"LibRaw returned {linear.dtype} pixels, expected 16 bits")
     return linear
+
+
+def _transform(rgb: NDArray[np.float32], matrix: NDArray[np.float64]) -> NDArray[np.float32]:
+    """``rgb @ matrix.T`` in single precision, without the linear-algebra library.
+
+    The bands of a picture are developed on several threads; the library's
+    own thread pool, called from each of them, stalls for minutes.
+    """
+    m = matrix.astype(np.float32)
+    out = np.empty_like(rgb)
+    for row in range(3):
+        out[..., row] = (
+            rgb[..., 0] * m[row, 0] + rgb[..., 1] * m[row, 1] + rgb[..., 2] * m[row, 2]
+        )
+    return out
+
+
+def _curve_table(points: NDArray[np.float64] | None) -> NDArray[np.float32]:
+    """Tone curve on the 65 536 values of a channel: the profile's, or Adobe's default."""
+    levels = np.arange(65536, dtype=np.float64) / 65535.0
+    if points is None:
+        return base_curve(levels).astype(np.float32)
+    return np.interp(levels, points[:, 0], points[:, 1]).astype(np.float32)
+
+
+def _through_curve(rgb: NDArray[np.float32], curve: NDArray[np.float32]) -> NDArray[np.float32]:
+    """Tone curve at constant hue (DNG rule), in place: ``(..., 3)`` values in ``[0, 1]``."""
+    largest = rgb.max(axis=-1)
+    smallest = rgb.min(axis=-1)
+    top = curve[np.rint(largest * 65535.0).astype(np.uint16)]
+    bottom = curve[np.rint(smallest * 65535.0).astype(np.uint16)]
+    span = largest - smallest
+    slope = np.divide(top - bottom, span, out=np.zeros_like(span), where=span > 0.0)
+    rgb -= smallest[..., None]
+    rgb *= slope[..., None]
+    rgb += bottom[..., None]
+    return rgb
+
+
+def develop_with_profile(
+    camera: NDArray[np.float32],
+    plan: Development,
+    curve: NDArray[np.float32] | None = None,
+) -> NDArray[np.float32]:
+    """Camera values ``(N, 3)`` in ``[0, 1]`` → developed linear ProPhoto RGB.
+
+    The steps of the Adobe DNG SDK for a camera profile, in its order:
+
+    1. the profile's matrix, the neutral of the shot landing on white;
+    2. its hue / saturation table;
+    3. the exposure (BaselineExposure plus the profile's offset), clipped at
+       white, then the black point (:data:`RAW_BLACK_POINT`), on each channel;
+    4. its look table;
+    5. the tone curve (the profile's, or Adobe's default) at constant hue.
+
+    *curve* is the table of that curve (:func:`_curve_table`), passed by a
+    caller that develops many bands so that it is built once.
+    """
+    rgb = np.clip(_transform(camera, plan.camera_to_prophoto), 0.0, None)
+    if plan.hue_sat_map is not None:
+        rgb = apply_hsv_table(rgb, plan.hue_sat_map)
+    if plan.exposure_ev >= 0.0:
+        rgb = np.minimum(rgb * np.float32(2.0**plan.exposure_ev), np.float32(1.0))
+    else:
+        rgb = exposure_curve(rgb.astype(np.float64), plan.exposure_ev).astype(np.float32)
+    rgb -= np.float32(RAW_BLACK_POINT)
+    rgb *= np.float32(1.0 / (1.0 - RAW_BLACK_POINT))
+    np.clip(rgb, 0.0, 1.0, out=rgb)
+    if plan.look_table is not None:
+        rgb = apply_hsv_table(rgb, plan.look_table)
+    return _through_curve(rgb, _curve_table(plan.tone_curve) if curve is None else curve)
 
 
 def _develop_rows(rows: NDArray[np.uint16], baseline_exposure: float) -> NDArray[np.float32]:
@@ -569,19 +672,20 @@ def _develop_rows(rows: NDArray[np.uint16], baseline_exposure: float) -> NDArray
     lowered = np.clip((largest - RAW_BLACK_POINT) / (1.0 - RAW_BLACK_POINT), 0.0, 1.0)
     scale = np.divide(lowered, largest, out=np.zeros_like(largest), where=largest > 0.0)
     rgb *= scale[..., None]
-    smallest = rgb.min(axis=2)
-    top = curve[np.rint(lowered * 65535.0).astype(np.uint16)]
-    bottom = curve[np.rint(smallest * 65535.0).astype(np.uint16)]
-    span = lowered - smallest
-    slope = np.divide(top - bottom, span, out=np.zeros_like(span), where=span > 0.0)
-    rgb -= smallest[..., None]
-    rgb *= slope[..., None]
-    rgb += bottom[..., None]
-    return rgb
+    return _through_curve(rgb, curve)
 
 
-def develop_raw_pixels(linear16: NDArray[np.uint16], baseline_exposure: float = 0.0) -> WideImage:
-    """A :class:`WideImage` from 16-bit linear ProPhoto pixels (see :func:`develop_raw_linear`).
+def develop_raw_pixels(
+    linear16: NDArray[np.uint16],
+    baseline_exposure: float = 0.0,
+    plan: Development | None = None,
+) -> WideImage:
+    """A :class:`WideImage` from 16-bit linear pixels.
+
+    Without *plan* the pixels are linear ProPhoto RGB, developed by
+    :func:`develop_raw_linear`.  With one they are the camera's own channels,
+    developed by :func:`develop_with_profile` (*baseline_exposure* is then
+    the plan's).
 
     The displayed array is sRGB; ``native`` holds the same pixels in Display
     P3; ``analysis_lab`` is computed from the developed floating-point values,
@@ -601,7 +705,7 @@ def develop_raw_pixels(linear16: NDArray[np.uint16], baseline_exposure: float = 
     )
 
     def encoded(developed: NDArray[np.float32], matrix: NDArray[np.float64]) -> NDArray[np.uint8]:
-        linear = np.clip(developed @ matrix.T.astype(np.float32), 0.0, 1.0)
+        linear = np.clip(_transform(developed, matrix), 0.0, 1.0)
         return encode[np.rint(linear * steps).astype(np.uint16)]
 
     # The analysis copy is an average of the *developed* pixels.  Reducing the
@@ -617,9 +721,15 @@ def develop_raw_pixels(linear16: NDArray[np.uint16], baseline_exposure: float = 
 
     srgb = np.empty((height, width, 3), dtype=np.uint8)
     native = np.empty((height, width, 3), dtype=np.uint8)
-    reduced: list[NDArray[Any]] = []
-    for start in range(0, height, _DEVELOP_ROWS):
-        developed = _develop_rows(linear16[start : start + _DEVELOP_ROWS], baseline_exposure)
+    curve = _curve_table(plan.tone_curve) if plan is not None else None
+
+    def develop_band(start: int) -> NDArray[Any]:
+        band = linear16[start : start + _DEVELOP_ROWS]
+        if plan is None or curve is None:
+            developed = _develop_rows(band, baseline_exposure)
+        else:
+            camera = band.reshape(-1, 3).astype(np.float32) / np.float32(65535.0)
+            developed = develop_with_profile(camera, plan, curve).reshape(band.shape)
         srgb[start : start + _DEVELOP_ROWS] = encoded(developed, to_srgb)
         native[start : start + _DEVELOP_ROWS] = encoded(developed, to_p3)
         perceptual: NDArray[Any] = np.cbrt(developed)
@@ -628,37 +738,69 @@ def develop_raw_pixels(linear16: NDArray[np.uint16], baseline_exposure: float = 
             perceptual = cv2.resize(
                 perceptual, (width // factor, rows), interpolation=cv2.INTER_AREA
             )
-        reduced.append(perceptual)
+        return perceptual
+
+    # Bands are independent and numpy releases the interpreter lock: the
+    # profile tables, the costly part, run on several cores.
+    starts = range(0, height, _DEVELOP_ROWS)
+    with ThreadPoolExecutor(max_workers=_DEVELOP_THREADS) as pool:
+        reduced = list(pool.map(develop_band, starts))
     small = np.vstack(reduced)
     if small.shape[:2] != (small_h, small_w):
         small = cv2.resize(small, (small_w, small_h), interpolation=cv2.INTER_AREA)
     linear = small.reshape(-1, 3).astype(np.float64) ** 3
     analysis = linear_to_oklab(linear @ to_srgb.T).reshape(small_h, small_w, 3)
-    return WideImage(
-        srgb, analysis, str(DISPLAY_P3.label), native, DISPLAY_P3, RENDERING_NEUTRAL_RAW
-    )
+    rendering = RENDERING_NEUTRAL_RAW if plan is None else RENDERING_ADOBE_PROFILE
+    return WideImage(srgb, analysis, str(DISPLAY_P3.label), native, DISPLAY_P3, rendering)
+
+
+def _profile_plan(path: Path) -> Development | None:
+    """Adobe Standard resolved for the DNG at *path*, when Adobe installed it here."""
+    dng = read_dng_colour(path)
+    if dng is None or not BASELINE_EXPOSURE_RANGE[0] <= dng.baseline_exposure <= 4.0:
+        return None
+    profile = find_adobe_standard(dng.camera_model)
+    if profile is None:
+        logger.info("No Adobe Standard profile installed for %r", dng.camera_model)
+        return None
+    try:
+        return plan_development(profile, dng)
+    except ValueError as exc:
+        logger.info("Adobe Standard profile unusable for %s: %s", path.name, exc)
+        return None
 
 
 def _develop_raw_file(path: Path) -> WideImage | None:
-    """Develop the RAW file at *path*, or ``None`` when LibRaw cannot demosaic it."""
+    """Develop the RAW file at *path*, or ``None`` when LibRaw cannot demosaic it.
+
+    A DNG whose camera has an « Adobe Standard » profile on this machine is
+    developed with it; any other file with its own matrices, as LibRaw reads
+    them.
+    """
+    plan = _profile_plan(path)
     try:
         import rawpy
 
         with rawpy.imread(str(path)) as raw:
-            linear = _demosaic_linear(raw)
+            linear = _demosaic_linear(raw, camera_space=plan is not None)
     except Exception as exc:
         logger.info("Cannot develop %s (%s): falling back to its embedded preview", path, exc)
         return None
     baseline, gain_map = read_dng_tags(path)
     logger.info(
-        "Developed %s: %dx%d, BaselineExposure %+.2f EV%s",
+        "Developed %s: %dx%d, BaselineExposure %+.2f EV, %s%s",
         path.name,
         linear.shape[1],
         linear.shape[0],
         baseline,
+        (
+            f"{plan.profile_name} profile of the camera ({plan.kelvin:.0f} K)"
+            if plan is not None
+            else "the file's own matrices"
+        ),
         " (gain table map ignored, as outside the file's own profile)" if gain_map else "",
     )
-    return develop_raw_pixels(linear, baseline)
+    return develop_raw_pixels(linear, baseline, plan)
 
 
 def _try_extract_embedded_preview(raw: Any) -> ImageArray | None:
